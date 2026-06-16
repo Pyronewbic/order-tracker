@@ -82,22 +82,51 @@ export interface GmailAccount {
   refreshToken: string;
 }
 
-/** Parse and validate the environment. Throws a readable error on failure. */
-export function loadConfig(): Config {
-  // dotenv loads a blank `KEY=` line as "" (not undefined), and zod's
-  // `.min(1)` rejects "" even on `.optional()`/`.default()` fields — so a
-  // freshly-copied .env.example (with blank optional keys) would crash startup.
-  // Treat blank/whitespace values as unset so defaults/optionals apply.
+/**
+ * Snapshot of process.env with blank/whitespace values dropped. dotenv loads a
+ * blank `KEY=` line as "" (not undefined), and zod's `.min(1)` rejects "" even
+ * on `.optional()`/`.default()` fields — so without this a freshly-copied
+ * .env.example (with blank optional keys) would crash validation. Treating blank
+ * as unset lets defaults/optionals apply.
+ */
+function sanitizedEnv(): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (typeof value === "string" && value.trim() !== "") env[key] = value;
   }
-  const parsed = envSchema.safeParse(env);
+  return env;
+}
+
+function formatIssues(error: z.ZodError): string {
+  return error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`).join("\n");
+}
+
+/** Parse and validate the environment. Throws a readable error on failure. */
+export function loadConfig(): Config {
+  const parsed = envSchema.safeParse(sanitizedEnv());
   if (!parsed.success) {
-    const issues = parsed.error.issues
-      .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-      .join("\n");
-    throw new Error(`Invalid environment configuration:\n${issues}`);
+    throw new Error(`Invalid environment configuration:\n${formatIssues(parsed.error)}`);
+  }
+  return parsed.data;
+}
+
+// Minimal schema for the one-time OAuth CLI (`npm run auth`), which needs only
+// the Gmail OAuth client — not Notion/Telegram/runtime config. This lets you
+// authorize inboxes before the rest of the setup is in place.
+const authEnvSchema = z.object({
+  GMAIL_CLIENT_ID: z.string().min(1, "GMAIL_CLIENT_ID is required"),
+  GMAIL_CLIENT_SECRET: z.string().min(1, "GMAIL_CLIENT_SECRET is required"),
+  ACCOUNTS_FILE: z.string().default("accounts.json"),
+  OAUTH_REDIRECT_PORT: z.coerce.number().int().positive().default(4567),
+});
+
+export type AuthConfig = z.infer<typeof authEnvSchema>;
+
+/** Validate just the Gmail OAuth fields needed by the auth CLI. */
+export function loadAuthConfig(): AuthConfig {
+  const parsed = authEnvSchema.safeParse(sanitizedEnv());
+  if (!parsed.success) {
+    throw new Error(`Invalid environment configuration:\n${formatIssues(parsed.error)}`);
   }
   return parsed.data;
 }

@@ -2,7 +2,7 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import { google } from "googleapis";
-import { loadConfig } from "./config.js";
+import { loadAuthConfig } from "./config.js";
 import { writeFileAtomic } from "./fsutil.js";
 
 // Read-only is the least-privilege scope that still exposes message bodies (the
@@ -29,7 +29,7 @@ const LABEL_RE = /^[A-Za-z0-9_.-]+$/;
  * intended Google account in the browser chooser each time.
  */
 async function main(): Promise<void> {
-  const cfg = loadConfig();
+  const cfg = loadAuthConfig();
   const args = process.argv.slice(2).filter((a) => a !== "--");
   const wantList = args.includes("--list");
   const label = args.find((a) => !a.startsWith("-"));
