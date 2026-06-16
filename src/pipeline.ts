@@ -12,7 +12,7 @@ import { matchRow } from "./notion/matcher.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
 import type { Notifier } from "./telegram/client.js";
-import { statusRank } from "./types.js";
+import { isTerminalStatus, statusRank } from "./types.js";
 
 /** Shared collaborators for a poll. Built once at startup, reused every tick. */
 export interface Deps {
@@ -78,19 +78,30 @@ export async function fetchNewMessages(
 }
 
 /**
- * Decide what to do with a status update for a row:
- *  - "noop": new status equals current — skip write + notify.
- *  - "regress": new status ranks below current — a late/out-of-order email
- *    can't un-deliver a package; skip + log.
- *  - "apply": new status advances the row — write it.
+ * Decide what to do with a status transition (current → new):
+ *  - "noop": same status — skip.
+ *  - "regress": the new status can't supersede the current one — skip + log.
+ *  - "apply": the new status should be written.
+ *
+ * Rules: Cancelled/Returned are terminal (nothing supersedes them) but can be
+ * set from any non-terminal state (incl. Delivered → Returned). Delayed can be
+ * set from any active state but not after Delivered (stale), and any progress
+ * update supersedes a Delayed. The remaining four form a monotonic ladder
+ * (Ordered < In Transit < Arriving Soon < Delivered) that can only advance.
  */
 export function planUpdate(
   row: OrderRow,
   update: ShipmentUpdate,
 ): "noop" | "regress" | "apply" {
-  if (update.status === row.status) return "noop";
-  if (statusRank(update.status) < statusRank(row.status)) return "regress";
-  return "apply";
+  const cur = row.status;
+  const next = update.status;
+  if (next === cur) return "noop";
+  if (isTerminalStatus(cur)) return "regress"; // terminal — nothing supersedes
+  if (isTerminalStatus(next)) return "apply"; // cancel/return from any live state
+  if (next === "Delayed") return cur === "Delivered" ? "regress" : "apply";
+  if (cur === "Delayed") return "apply"; // any progress supersedes a delay
+  // Both on the progress ladder (cur may be ""/unknown → rank 0).
+  return statusRank(next) > statusRank(cur) ? "apply" : "regress";
 }
 
 /**
@@ -187,7 +198,13 @@ async function runShipping(
       const ident =
         update.itemName ||
         `${update.carrier} ${update.trackingNumbers.join(", ") || "(no tracking #)"}`;
-      await log.warn(`[${label}] No Notion match for ${ident} (subject: "${msg.subject}").`);
+      // Digital goods (codes/downloads) have no shipment to track — log them as
+      // info instead of a "no match" warning so they don't read as a problem.
+      if (update.category === "Digital") {
+        await log.info(`[${label}] Digital order, not tracked: "${msg.subject}".`);
+      } else {
+        await log.warn(`[${label}] No Notion match for ${ident} (subject: "${msg.subject}").`);
+      }
       continue;
     }
 
@@ -245,35 +262,48 @@ async function applyShipmentUpdate(
   const { cfg, notion, notifier, log } = deps;
 
   const decision = planUpdate(row, update);
-  if (decision === "noop") {
-    await log.info(`[${label}] No change: "${row.book}" already ${update.status}.`);
-    return;
-  }
+  const willSetStatus = decision === "apply";
+  // Backfill the category only when we detected one and the row has none — never
+  // overwrite a category the user set manually.
+  const categoryToSet = update.category && !row.category ? update.category : undefined;
+
   if (decision === "regress") {
     await log.warn(
       `[${label}] Skipped regression for "${row.book}": ${row.status || "(unset)"} ✗→ ${update.status}.`,
     );
-    return;
+  } else if (decision === "noop" && !categoryToSet) {
+    await log.info(`[${label}] No change: "${row.book}" already ${update.status}.`);
   }
 
+  if (!willSetStatus && !categoryToSet) return; // nothing to write
+
   if (cfg.DRY_RUN) {
-    await log.info(`[${label}] [dry-run] would set "${row.book}" → ${update.status} (${update.detail}).`);
+    const parts: string[] = [];
+    if (willSetStatus) parts.push(`status → ${update.status}`);
+    if (categoryToSet) parts.push(`category → ${categoryToSet}`);
+    await log.info(`[${label}] [dry-run] would set "${row.book}": ${parts.join(", ")}.`);
     return;
   }
 
   try {
-    await notion.applyUpdate(
-      row,
-      update.status,
-      update.detail,
-      new Date(msg.internalDateMs),
-    );
+    await notion.applyUpdate(row, {
+      status: willSetStatus ? update.status : undefined,
+      category: categoryToSet,
+      detail: update.detail,
+      at: new Date(msg.internalDateMs),
+    });
     ctx.updates++;
-    // Reflect the write in the in-memory row so later messages this tick see the
-    // new status (keeps the no-op / regression guards accurate within a tick).
-    row.status = update.status;
-    await log.change(row.book, update.status, update.detail, label);
-    await notifier.notifyStatusChange(row.book, update.status, update.detail, label);
+    if (willSetStatus) {
+      // Reflect the write in the in-memory row so later messages this tick see
+      // the new status (keeps the no-op / regression guards accurate per tick).
+      row.status = update.status;
+      await log.change(row.book, update.status, update.detail, label);
+      await notifier.notifyStatusChange(row.book, update.status, update.detail, label);
+    }
+    if (categoryToSet) {
+      row.category = categoryToSet;
+      if (!willSetStatus) await log.info(`[${label}] Categorized "${row.book}" → ${categoryToSet}.`);
+    }
   } catch (err) {
     await log.error(`[${label}] Failed updating "${row.book}": ${String(err)}`);
   }

@@ -1,6 +1,7 @@
-import type { OrderStatus } from "../types.js";
+import type { OrderCategory, OrderStatus } from "../types.js";
 import type { ParsedMessage } from "./client.js";
 import { detectCarrier, extractTrackingNumbers } from "../carriers.js";
+import { classifyItem } from "../categorize.js";
 
 export interface ShipmentUpdate {
   status: OrderStatus;
@@ -11,6 +12,8 @@ export interface ShipmentUpdate {
   trackingNumbers: string[];
   /** Carrier name ("Amazon", "UPS", …) or "Unknown". */
   carrier: string;
+  /** Item-type category, or null when it can't be determined confidently. */
+  category: OrderCategory | null;
   /** Short human-readable detail recorded in Notion / notifications. */
   detail: string;
 }
@@ -22,6 +25,38 @@ export interface ShipmentUpdate {
  * later one.
  */
 const STATUS_RULES: { status: OrderStatus; patterns: RegExp[] }[] = [
+  // Decisive states first; "Ordered" (weakest signal) is checked last so a
+  // "your order has shipped" email resolves to In Transit, not Ordered.
+  {
+    status: "Cancelled",
+    patterns: [
+      /\bhas been cancell?ed\b/i,
+      /\border (?:was |has been |is )?cancell?ed\b/i,
+      /\b(?:we|amazon)[^.]{0,30}cancell?ed your\b/i,
+      /^cancell?ed[:\s-]/i,
+      /ご注文[^。]{0,12}キャンセル/,
+    ],
+  },
+  {
+    status: "Returned",
+    patterns: [
+      /\byour return\b/i,
+      /\breturn (?:was |has been |is )?(?:received|completed|processed)\b/i,
+      /\brefund (?:was |has been |is )?(?:issued|processed|completed)\b/i,
+      /\breturned to (?:sender|seller|us)\b/i,
+      /^returned[:\s-]/i,
+    ],
+  },
+  {
+    status: "Delayed",
+    patterns: [
+      /\b(?:delivery|shipment|package|order) (?:is |has been |was )?delayed\b/i,
+      /\bdelay(?:ed)? (?:in )?(?:your )?(?:delivery|shipment)\b/i,
+      /\bdelivery (?:exception|attempt(?:ed)? (?:failed|unsuccessful))\b/i,
+      /\b(?:couldn'?t|could not|unable to|were unable to|failed to) (?:be )?deliver/i,
+      /\battempted delivery\b/i,
+    ],
+  },
   {
     status: "Arriving Soon",
     patterns: [
@@ -49,6 +84,16 @@ const STATUS_RULES: { status: OrderStatus; patterns: RegExp[] }[] = [
       /in transit/i,
       /dispatched/i,
       /label created/i,
+    ],
+  },
+  {
+    status: "Ordered",
+    patterns: [
+      /^ordered[:\s-]/i,
+      /\border (?:has been )?(?:placed|confirmed|received)\b/i,
+      /\bthank you for your order\b/i,
+      /\bwe(?:'ve| have) received your order\b/i,
+      /\border confirmation\b/i,
     ],
   },
 ];
@@ -105,12 +150,14 @@ export function buildUpdate(
 ): ShipmentUpdate {
   const carrier = detectCarrier(msg.from);
   const haystack = `${msg.subject}\n${msg.body || msg.snippet}`;
+  const itemName = itemNameOverride?.trim() || extractItemName(msg.subject);
 
   return {
     status,
-    itemName: itemNameOverride?.trim() || extractItemName(msg.subject),
+    itemName,
     trackingNumbers: extractTrackingNumbers(haystack, carrier),
     carrier: carrier?.name ?? "Unknown",
+    category: classifyItem({ itemName, from: msg.from, subject: msg.subject }),
     detail: msg.subject.trim(),
   };
 }

@@ -23,9 +23,26 @@ Gmail (receipts) ──parse──▶ merchant + amount ──history──▶ r
 
 | Email signal | Notion `Status` |
 | --- | --- |
+| "order confirmed" / "order placed" / "Ordered:" | `Ordered` |
 | "has shipped" / "in transit" / "on its way" / "label created" | `In Transit` |
+| "delivery delayed" / "attempted delivery" / "unable to deliver" | `Delayed` |
 | "out for delivery" / "arriving today" / "will be delivered tomorrow" | `Arriving Soon` |
 | "was delivered" / "has been delivered" | `Delivered` |
+| "order cancelled" | `Cancelled` |
+| "your return received" / "refund issued" | `Returned` |
+
+Statuses advance along the ladder **Ordered → In Transit → Arriving Soon →
+Delivered** and never regress (a late, out-of-order email can't un-deliver a
+package). `Delayed` can be set while a package is in motion and is superseded
+once it moves again; `Cancelled` and `Returned` are terminal.
+
+Each row is also tagged with a **Category** (`Game`, `Book`, `Accessory`,
+`Electronics`, `Digital`, `Other`), inferred by keyword from the item name. The
+category is filled only when a row's Category is blank, so any value you set
+manually is never overwritten. Keyword inference reliably catches accessories,
+books, digital codes, and known game franchises; arbitrary titles it can't place
+are left blank for you to set. Digital orders (codes/downloads) have no shipment
+and are logged but not tracked as packages.
 
 For each new email it parses the item/book name from the subject, fuzzy-matches
 it (via [Fuse.js](https://fusejs.io/)) against the **Book** title column, sets
@@ -48,8 +65,11 @@ the retailer email, not the carrier.
 - Node.js ≥ 20
 - A Notion database with these properties (exact names, case-sensitive):
   - **Book** — `Title`
-  - **Status** — `Select` with options `Delivered`, `In Transit`, `Arriving Soon`
+  - **Status** — `Select` with options `Ordered`, `In Transit`, `Delayed`,
+    `Arriving Soon`, `Delivered`, `Cancelled`, `Returned`
   - **Notes** — `Text`
+  - **Category** — `Select` with options `Game`, `Book`, `Accessory`,
+    `Electronics`, `Digital`, `Other` (the tracker fills this when blank)
 
 ## Setup
 
@@ -330,8 +350,9 @@ src/
   fsutil.ts           atomic 0600 file writes + chmod helper
   state.ts            per-account watermarks, tracking links, subscription history
   carriers.ts         carrier senders + tracking-number patterns
+  categorize.ts       item-type classifier (Game/Book/Accessory/Digital/…)
   digest.ts           daily digest builder/sender
-  types.ts            shared OrderStatus type + status ranking
+  types.ts            shared status + category types, status ranking
   gmail/
     client.ts         Gmail API wrapper (search + decode)
     parser.ts         subject/body → status + item name + tracking + carrier

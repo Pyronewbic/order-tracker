@@ -1,6 +1,6 @@
 import { Client } from "@notionhq/client";
 import { z } from "zod";
-import type { OrderStatus } from "../types.js";
+import type { OrderCategory, OrderStatus } from "../types.js";
 import { withRetry } from "../retry.js";
 
 /** A Notion database row reduced to the fields this tracker reads. */
@@ -12,6 +12,16 @@ export interface OrderRow {
   notes: string;
   /** Current "Status" select value, or "" if unset. */
   status: string;
+  /** Current "Category" select value, or "" if unset/absent. */
+  category: string;
+}
+
+/** A page update: set the status (with a Notes line) and/or the category. */
+export interface RowUpdate {
+  status?: OrderStatus;
+  category?: OrderCategory;
+  detail: string;
+  at: Date;
 }
 
 // Notion's API responses are loosely typed; validate the slice we depend on.
@@ -30,6 +40,10 @@ const pageSchema = z
         .passthrough()
         .optional(),
       Status: z
+        .object({ select: z.object({ name: z.string() }).nullable() })
+        .passthrough()
+        .optional(),
+      Category: z
         .object({ select: z.object({ name: z.string() }).nullable() })
         .passthrough()
         .optional(),
@@ -92,6 +106,7 @@ export class NotionClient {
           book: plain(props.Book?.title),
           notes: plain(props.Notes?.rich_text),
           status: props.Status?.select?.name ?? "",
+          category: props.Category?.select?.name ?? "",
         });
       }
 
@@ -102,26 +117,28 @@ export class NotionClient {
   }
 
   /**
-   * Set the row's Status and append a timestamped line to its Notes. The
-   * previous note text is preserved; the new line is prepended so the latest
-   * update is visible first.
+   * Apply a {@link RowUpdate}: when `status` is set, update Status and prepend a
+   * timestamped line to Notes (latest first, previous text preserved); when
+   * `category` is set, update Category. A no-field update is a no-op.
    */
-  async applyUpdate(
-    row: OrderRow,
-    status: OrderStatus,
-    detail: string,
-    at: Date,
-  ): Promise<void> {
-    const line = `[${at.toISOString()}] ${status} — ${detail}`;
-    const combined = row.notes ? `${line}\n${row.notes}` : line;
+  async applyUpdate(row: OrderRow, update: RowUpdate): Promise<void> {
+    const properties: Record<string, unknown> = {};
+
+    if (update.status) {
+      const line = `[${update.at.toISOString()}] ${update.status} — ${update.detail}`;
+      const combined = row.notes ? `${line}\n${row.notes}` : line;
+      properties.Status = { select: { name: update.status } };
+      properties.Notes = { rich_text: toRichText(combined) };
+    }
+    if (update.category) {
+      properties.Category = { select: { name: update.category } };
+    }
+    if (Object.keys(properties).length === 0) return;
 
     await withRetry(() =>
       this.notion.pages.update({
         page_id: row.pageId,
-        properties: {
-          Status: { select: { name: status } },
-          Notes: { rich_text: toRichText(combined) },
-        },
+        properties: properties as Parameters<Client["pages"]["update"]>[0]["properties"],
       }),
     );
   }

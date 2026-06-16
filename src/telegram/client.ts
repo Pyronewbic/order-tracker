@@ -28,9 +28,13 @@ export interface Notifier {
 }
 
 export const STATUS_EMOJI: Record<OrderStatus, string> = {
-  Delivered: "✅",
-  "Arriving Soon": "🚚",
+  Ordered: "🧾",
   "In Transit": "📦",
+  Delayed: "⏳",
+  "Arriving Soon": "🚚",
+  Delivered: "✅",
+  Cancelled: "❌",
+  Returned: "↩️",
 };
 
 /**
