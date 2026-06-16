@@ -19,6 +19,7 @@ Gmail (receipts) ──parse──▶ merchant + amount ──history──▶ r
 - **[Daily digest](#daily-digest)** — one scheduled summary of everything in transit.
 - **[Subscription detection](#subscription-detection)** — flags recurring charges from receipt emails.
 - **[Forwarder tracking](#forwarder-package-tracking)** — logs packages held at ForwardMe (arrival, contents, storage countdown) into a standalone Notion DB.
+- **[Digital game tracking](#digital-game-tracking)** — logs eShop (US/JP) and Amazon JP digital game purchases into a standalone Notion DB.
 
 ## How shipment tracking works
 
@@ -251,6 +252,33 @@ reliable email signal for it). Unlike the book DB, this one auto-creates rows, s
 integration needs **Insert content** on it (see step 4). A misconfiguration disables
 just this feature — the book tracker keeps running.
 
+## Digital game tracking
+
+Set `GAMES_DATABASE_ID` to track digital game purchases in a **separate** Notion DB.
+On the same poll loop it parses (`GAMES_QUERY`):
+
+| Source | Sender | Captures |
+| --- | --- | --- |
+| Nintendo eShop (US) | `accounts.nintendo.com` | "Confirmation of Digital Purchase" → title, total, device |
+| Nintendo eShop (JP) | `accounts.nintendo.com` | `[ご利用明細] 商品のご購入` + `【予約確認】` (preorder) |
+| Amazon JP codes | `digital-no-reply@` / `digitalorder-update@amazon.co.jp` | order, code-delivery, preorder |
+
+Each is upserted to one row keyed by **Platform + title**, so an order and its later
+code-delivery (or a preorder and its purchase) collapse together. `Purchased` is never
+reverted to `Preordered`. The eShop clause is scoped to purchase/preorder subjects so
+sign-in / verification / NSO-renewal mail from the same sender is ignored.
+
+**Intentionally excluded** (not games): wallet funding — "Funds Added" receipts and
+prepaid-credit codes (`ニンテンドープリペイド番号`) — and recurring services (Switch
+Online membership, Game Catalog tickets). Widen/remove `EXCLUDE_TITLE` in
+`src/games/parser.ts` to include them. DB schema: **Game** (title), **Status**
+(`Preordered`/`Purchased`), **Platform** (`eShop US`/`eShop JP`/`Amazon JP`), **Date**,
+**Price**, **Device**. Needs **Insert content**. A misconfig disables only this feature.
+
+> US eShop prices/titles come from English receipts; JP from Japanese. US receipts in a
+> non-US region (e.g. an Argentine eShop account) still parse — the price string is stored
+> verbatim as shown.
+
 ## Multiple Gmail accounts
 
 The tracker polls any number of Gmail accounts into the **one** Notion database,
@@ -348,6 +376,7 @@ single-account fallback. Optional keys:
 - **`DIGEST_CRON`** — enable the [daily digest](#daily-digest) (needs Telegram).
 - **`SUBSCRIPTION_QUERY`** — enable [subscription detection](#subscription-detection).
 - **`FORWARDER_DATABASE_ID`** / **`FORWARDER_QUERY`** — enable [forwarder tracking](#forwarder-package-tracking) (needs Insert content).
+- **`GAMES_DATABASE_ID`** / **`GAMES_QUERY`** — enable [digital game tracking](#digital-game-tracking) (needs Insert content).
 - **Guardrails** (`DRY_RUN`, `MAX_UPDATES_PER_TICK`) — see
   [Permissions & guardrails](#permissions--guardrails).
 - **LLM fallback** (`LLM_FALLBACK`, `ANTHROPIC_API_KEY`, `LLM_MODEL`,
@@ -404,6 +433,9 @@ src/
   forwarder/
     parser.ts         ForwardMe mail → arrival / reminder / outbound event
     notion.ts         standalone "Forwarder Packages" DB client (upsert by code)
+  games/
+    parser.ts         eShop / Amazon JP digital mail → game purchase/preorder
+    notion.ts         standalone "Digital Games" DB client (upsert by platform+title)
   telegram/
     client.ts         Telegram notifier (sendMessage); no-op / dry-run variants
     chat-id.ts        getUpdates helper (npm run telegram:chat-id)

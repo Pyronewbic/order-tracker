@@ -8,6 +8,7 @@ import { GmailClient, makeOAuthClient } from "./gmail/client.js";
 import { LlmParser } from "./gmail/llm-parser.js";
 import { NotionClient } from "./notion/client.js";
 import { ForwarderNotionClient } from "./forwarder/notion.js";
+import { GamesNotionClient } from "./games/notion.js";
 import { sendDigest } from "./digest.js";
 import { createNotifier } from "./telegram/client.js";
 import { runTick, type Deps } from "./pipeline.js";
@@ -69,6 +70,19 @@ async function main(): Promise<void> {
     }
   }
 
+  // Optional digital-game tracking → standalone Notion DB (same failure
+  // isolation as the forwarder: a misconfig disables only this feature).
+  let games: GamesNotionClient | null = null;
+  if (cfg.GAMES_DATABASE_ID) {
+    const client = new GamesNotionClient(cfg.NOTION_API_KEY, cfg.GAMES_DATABASE_ID);
+    try {
+      await client.verifyAccess();
+      games = client;
+    } catch (err) {
+      await log.error(`Digital-games DB access check failed; games tracking disabled: ${String(err)}`);
+    }
+  }
+
   const notifier = createNotifier(cfg, log, redact);
 
   // Optional LLM fallback: opt-in (LLM_FALLBACK) AND requires an API key.
@@ -81,7 +95,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const deps: Deps = { cfg, notion, notifier, log, llm, forwarder };
+  const deps: Deps = { cfg, notion, notifier, log, llm, forwarder, games };
 
   // Guard against overlapping runs if a poll outlives its interval.
   let running = false;
@@ -126,6 +140,7 @@ async function main(): Promise<void> {
       (cfg.SUBSCRIPTION_QUERY ? ", subscriptions: on" : "") +
       (cfg.DIGEST_CRON ? `, digest: "${cfg.DIGEST_CRON}"` : "") +
       (forwarder ? ", forwarder: on" : "") +
+      (games ? ", games: on" : "") +
       (llm ? ", LLM fallback: on" : "") +
       (cfg.DRY_RUN ? ", DRY-RUN" : "") +
       ".",

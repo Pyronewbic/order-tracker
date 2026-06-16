@@ -50,6 +50,18 @@ const envSchema = z
     FORWARDER_DATABASE_ID: z.string().min(1).optional(),
     // Gmail query for ForwardMe notifications (same query for every account).
     FORWARDER_QUERY: z.string().default("from:automated@forwardme.com"),
+    // Standalone "Digital Games" Notion DB. Unset → digital-game tracking off.
+    GAMES_DATABASE_ID: z.string().min(1).optional(),
+    // Gmail query for digital game purchases: Amazon JP digital (order + code
+    // delivery) and Nintendo eShop receipts/preorders. The eShop clause is
+    // scoped to purchase/preorder subjects so sign-in/verification/NSO-renewal
+    // mail from the same sender is excluded.
+    GAMES_QUERY: z
+      .string()
+      .default(
+        "(from:digital-no-reply@amazon.co.jp OR from:digitalorder-update@amazon.co.jp OR " +
+          "(from:accounts.nintendo.com (subject:ご利用明細 OR subject:予約確認 OR subject:receipt OR subject:purchase)))",
+      ),
     OAUTH_REDIRECT_PORT: z.coerce.number().int().positive().default(4567),
     MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),
     STATE_FILE: z.string().default("state.json"),

@@ -16,6 +16,13 @@ import {
   type PackageUpdate,
 } from "./forwarder/notion.js";
 import { parseForwarderEmail, type ForwarderEvent } from "./forwarder/parser.js";
+import {
+  gameKey,
+  isTerminalGameStatus,
+  type GamesNotionClient,
+  type GameUpdate,
+} from "./games/notion.js";
+import { parseGameEmail } from "./games/parser.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
 import type { Notifier } from "./telegram/client.js";
@@ -31,6 +38,8 @@ export interface Deps {
   llm: LlmParser | null;
   /** Optional forwarder (ForwardMe) tracking; null when disabled. */
   forwarder: ForwarderNotionClient | null;
+  /** Optional digital-game tracking; null when disabled. */
+  games: GamesNotionClient | null;
 }
 
 /** Mutable per-tick accumulators: shared Notion rows + cross-account counters. */
@@ -153,6 +162,11 @@ export async function runTick(
       await runForwarder(label, gmail, deps, state);
     } catch (err) {
       await log.error(`[${label}] forwarder job failed: ${String(err)}`);
+    }
+    try {
+      await runGames(label, gmail, deps, state);
+    } catch (err) {
+      await log.error(`[${label}] games job failed: ${String(err)}`);
     }
   }
 
@@ -497,6 +511,84 @@ async function runForwarder(
       }
     } catch (err) {
       await log.error(`[${label}] Failed upserting forwarder package ${code}: ${String(err)}`);
+    }
+  }
+}
+
+/**
+ * Digital-games job for one account: parse Amazon JP digital + Nintendo eShop
+ * purchase/preorder mail into the standalone "Digital Games" DB, keyed by
+ * platform + title (so an order and its later code-delivery, or a preorder and
+ * its purchase, collapse onto one row). `Purchased` is never reverted to
+ * `Preordered`. No-op unless the games DB is configured.
+ */
+async function runGames(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  state: State,
+): Promise<void> {
+  const { cfg, log, games } = deps;
+  if (!games) return;
+
+  const watermark = accountState(state, label);
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.GAMES_QUERY,
+    watermark.gamesLastMs,
+    log,
+    label,
+  );
+  if (messages.length === 0) {
+    await log.info(`[${label}] No new digital-game messages.`);
+    return;
+  }
+  await log.info(`[${label}] Processing ${messages.length} digital-game message(s).`);
+
+  const rows = await games.listGames();
+
+  for (const msg of messages) {
+    // Advance the watermark before any branch/skip so a message is processed once.
+    watermark.gamesLastMs = Math.max(watermark.gamesLastMs, msg.internalDateMs);
+
+    const ev = parseGameEmail(msg);
+    if (!ev) continue;
+
+    const key = gameKey(ev.platform, ev.title);
+    const existing = rows.get(key);
+
+    if (existing && isTerminalGameStatus(existing.status) && ev.status === "Preordered") {
+      continue; // don't revert a purchased game to preordered
+    }
+
+    const update: GameUpdate = {
+      status: ev.status,
+      platform: ev.platform,
+      dateMs: ev.receivedMs,
+      price: ev.price,
+      device: ev.device,
+    };
+
+    if (cfg.DRY_RUN) {
+      await log.info(
+        `[${label}] [dry-run] would ${existing ? "update" : "create"} game "${ev.title}" ` +
+          `(${ev.platform}, ${ev.status}).`,
+      );
+      continue;
+    }
+
+    try {
+      if (existing) {
+        if (existing.status === ev.status) delete update.status;
+        await games.updateGame(existing.pageId, update);
+        await log.info(`[${label}] Updated game "${ev.title}" (${ev.platform}, ${ev.status}).`);
+      } else {
+        const pageId = await games.createGame(ev.title, update);
+        rows.set(key, { pageId, key, status: ev.status });
+        await log.info(`[${label}] New game "${ev.title}" (${ev.platform}, ${ev.status}).`);
+      }
+    } catch (err) {
+      await log.error(`[${label}] Failed upserting game "${ev.title}": ${String(err)}`);
     }
   }
 }
