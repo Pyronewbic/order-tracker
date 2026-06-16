@@ -8,24 +8,27 @@ export interface OrderRow {
   pageId: string;
   /** Plain-text value of the "Book" title property. */
   book: string;
-  /** Current plain-text value of the "Notes" rich-text property. */
-  notes: string;
   /** Current "Status" select value, or "" if unset. */
   status: string;
   /** Current "Category" select value, or "" if unset/absent. */
   category: string;
+  /** Current "Tags" multi-select values (names), or [] if unset/absent. */
+  tags: string[];
 }
 
-/** A page update: set the status (with a Notes line) and/or the category. */
+/** A page update: set any of Status, Category, and Tags. */
 export interface RowUpdate {
   status?: OrderStatus;
   category?: OrderCategory;
-  detail: string;
-  at: Date;
+  /** Full desired tag set (the caller has already merged with existing tags). */
+  tags?: string[];
 }
 
 // Notion's API responses are loosely typed; validate the slice we depend on.
 const richTextItem = z.object({ plain_text: z.string() }).passthrough();
+const selectValue = z
+  .object({ select: z.object({ name: z.string() }).nullable() })
+  .passthrough();
 
 const pageSchema = z
   .object({
@@ -35,23 +38,15 @@ const pageSchema = z
         .object({ title: z.array(richTextItem) })
         .passthrough()
         .optional(),
-      Notes: z
-        .object({ rich_text: z.array(richTextItem) })
-        .passthrough()
-        .optional(),
-      Status: z
-        .object({ select: z.object({ name: z.string() }).nullable() })
-        .passthrough()
-        .optional(),
-      Category: z
-        .object({ select: z.object({ name: z.string() }).nullable() })
+      Status: selectValue.optional(),
+      Category: selectValue.optional(),
+      Tags: z
+        .object({ multi_select: z.array(z.object({ name: z.string() }).passthrough()) })
         .passthrough()
         .optional(),
     }),
   })
   .passthrough();
-
-const NOTE_CHUNK = 1900; // Notion caps a single rich-text item at 2000 chars.
 
 export class NotionClient {
   private readonly notion: Client;
@@ -104,9 +99,9 @@ export class NotionClient {
         rows.push({
           pageId: parsed.data.id,
           book: plain(props.Book?.title),
-          notes: plain(props.Notes?.rich_text),
           status: props.Status?.select?.name ?? "",
           category: props.Category?.select?.name ?? "",
+          tags: (props.Tags?.multi_select ?? []).map((t) => t.name),
         });
       }
 
@@ -117,21 +112,16 @@ export class NotionClient {
   }
 
   /**
-   * Apply a {@link RowUpdate}: when `status` is set, update Status and prepend a
-   * timestamped line to Notes (latest first, previous text preserved); when
-   * `category` is set, update Category. A no-field update is a no-op.
+   * Apply a {@link RowUpdate}: set any of Status, Category, and Tags. `tags`, if
+   * given, is written as the complete multi-select value (the caller merges with
+   * the row's existing tags). A no-field update is a no-op.
    */
   async applyUpdate(row: OrderRow, update: RowUpdate): Promise<void> {
     const properties: Record<string, unknown> = {};
-
-    if (update.status) {
-      const line = `[${update.at.toISOString()}] ${update.status} — ${update.detail}`;
-      const combined = row.notes ? `${line}\n${row.notes}` : line;
-      properties.Status = { select: { name: update.status } };
-      properties.Notes = { rich_text: toRichText(combined) };
-    }
-    if (update.category) {
-      properties.Category = { select: { name: update.category } };
+    if (update.status) properties.Status = { select: { name: update.status } };
+    if (update.category) properties.Category = { select: { name: update.category } };
+    if (update.tags && update.tags.length > 0) {
+      properties.Tags = { multi_select: update.tags.map((name) => ({ name })) };
     }
     if (Object.keys(properties).length === 0) return;
 
@@ -146,14 +136,4 @@ export class NotionClient {
 
 function plain(items: { plain_text: string }[] | undefined): string {
   return (items ?? []).map((i) => i.plain_text).join("");
-}
-
-/** Split text into <=2000-char rich-text items so Notion accepts it. */
-function toRichText(text: string): { text: { content: string } }[] {
-  const clipped = text.slice(0, NOTE_CHUNK * 5); // keep notes from growing unbounded
-  const chunks: { text: { content: string } }[] = [];
-  for (let i = 0; i < clipped.length; i += NOTE_CHUNK) {
-    chunks.push({ text: { content: clipped.slice(i, i + NOTE_CHUNK) } });
-  }
-  return chunks.length ? chunks : [{ text: { content: "" } }];
 }

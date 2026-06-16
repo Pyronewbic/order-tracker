@@ -1,23 +1,34 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import type { ParsedMessage } from "./client.js";
-import { ORDER_STATUSES, type OrderStatus } from "../types.js";
+import {
+  ORDER_CATEGORIES,
+  ORDER_STATUSES,
+  type OrderCategory,
+  type OrderStatus,
+} from "../types.js";
 
 // Cap the email body sent to the model. Shipping mail puts the signal up top;
 // this bounds per-call token cost and keeps marketing footers out of the prompt.
 const MAX_BODY_CHARS = 4000;
-const MAX_TOKENS = 256;
+const MAX_TOKENS = 320;
 
 const SYSTEM_PROMPT = [
-  "You classify shipping/delivery notification emails for physical orders.",
-  "Decide whether the email reports a shipment status, and if so which one:",
+  "You classify order/shipping notification emails (any language) for physical orders.",
+  "Decide if the email reports an order/shipment status, and if so which one:",
+  '- "Ordered": order placed/confirmed, not yet shipped.',
   '- "In Transit": shipped, dispatched, on the way, label created.',
+  '- "Delayed": delivery delayed, attempted/failed delivery.',
   '- "Arriving Soon": out for delivery, arriving today/tomorrow, an expected delivery date.',
   '- "Delivered": the package was delivered.',
-  "If the email is not a shipping/delivery notification for a physical product",
-  "(marketing, password reset, a plain receipt with no shipment, etc.), set",
-  "isShipping=false and status=null.",
-  "itemName: the product/item name if clearly stated, otherwise null.",
+  '- "Cancelled": the order was cancelled.',
+  '- "Returned": a return or refund was processed.',
+  "If it is not an order/shipping notification for a physical product (marketing,",
+  "password reset, a plain receipt, a digital code), set isShipping=false, status=null.",
+  "itemName: the product/item name if clearly stated, else null.",
+  "category: one of Game, Book, Accessory, Electronics, Digital, Other — or null if unclear.",
+  "tags: up to 6 short tags — franchise (e.g. Zelda, Mario) and attributes",
+  "(Preorder, Guide, Limited Edition, Switch 2, amiibo, Digital). Empty array if none.",
   "Never infer or output tracking numbers.",
 ].join("\n");
 
@@ -31,41 +42,53 @@ const OUTPUT_SCHEMA = {
   properties: {
     isShipping: {
       type: "boolean",
-      description: "True if this is a shipment status notification for a physical order.",
+      description: "True if this is an order/shipment status notification for a physical product.",
     },
     status: {
-      anyOf: [
-        { type: "string", enum: [...ORDER_STATUSES] },
-        { type: "null" },
-      ],
-      description: "The shipment status, or null when isShipping is false.",
+      anyOf: [{ type: "string", enum: [...ORDER_STATUSES] }, { type: "null" }],
+      description: "The order/shipment status, or null when isShipping is false.",
     },
     itemName: {
       anyOf: [{ type: "string" }, { type: "null" }],
       description: "Product/item name if clearly stated, else null.",
     },
+    category: {
+      anyOf: [{ type: "string", enum: [...ORDER_CATEGORIES] }, { type: "null" }],
+      description: "Item type, or null if unclear.",
+    },
+    tags: {
+      type: "array",
+      items: { type: "string" },
+      description: "Up to 6 short franchise/attribute tags; empty if none.",
+    },
   },
-  required: ["isShipping", "status", "itemName"],
+  required: ["isShipping", "status", "itemName", "category", "tags"],
 } as const;
 
 const classificationSchema = z.object({
   isShipping: z.boolean(),
   status: z.enum(ORDER_STATUSES).nullable(),
   itemName: z.string().nullable(),
+  category: z.enum(ORDER_CATEGORIES).nullable(),
+  tags: z.array(z.string()),
 });
 
-/** What the LLM contributes: a status (and optional item name) only. */
+/** The LLM's structured verdict: status, item name, category, and tags. */
 export interface LlmClassification {
-  status: OrderStatus;
-  itemName?: string;
+  isShipping: boolean;
+  status: OrderStatus | null;
+  itemName: string | null;
+  category: OrderCategory | null;
+  tags: string[];
 }
 
 /**
- * Optional fallback classifier for shipping emails the deterministic parser
- * can't read. Sends the email subject + (truncated) body to Claude and asks for
- * a structured verdict, validated with zod before use. Construction is cheap;
- * the caller gates *when* to call {@link classify} (opt-in, per-tick cap,
- * watermark dedup, never in dry-run) — this class just makes one bounded call.
+ * Optional classifier for order/shipping emails the deterministic parser can't
+ * read (foreign-language, ambiguous) or items its keyword lists can't tag/type.
+ * Sends the subject + (truncated) body to Claude for a structured verdict,
+ * validated with zod before use. Construction is cheap; the caller gates *when*
+ * to call {@link classify} (opt-in, per-tick cap, watermark dedup, never in
+ * dry-run) — this class just makes one bounded call.
  */
 export class LlmParser {
   private readonly client: Anthropic;
@@ -78,14 +101,12 @@ export class LlmParser {
   }
 
   /**
-   * Classify one message. Returns a status (+ optional item name) for a
-   * shipping email, or null when the model judges it not a shipment. Throws on
-   * API/parse errors so the caller can log-and-continue per message.
+   * Classify one message into a {@link LlmClassification}. Throws on API/parse
+   * errors so the caller can log-and-continue per message.
    */
-  async classify(msg: ParsedMessage): Promise<LlmClassification | null> {
+  async classify(msg: ParsedMessage): Promise<LlmClassification> {
     const body = (msg.body || msg.snippet).slice(0, MAX_BODY_CHARS);
-    const userContent =
-      `Subject: ${msg.subject}\nFrom: ${msg.from}\n\nBody:\n${body}`;
+    const userContent = `Subject: ${msg.subject}\nFrom: ${msg.from}\n\nBody:\n${body}`;
 
     const res = await this.client.messages.create({
       model: this.model,
@@ -95,10 +116,7 @@ export class LlmParser {
       output_config: { format: { type: "json_schema", schema: OUTPUT_SCHEMA } },
     });
 
-    const json = extractJson(res);
-    const parsed = classificationSchema.parse(json);
-    if (!parsed.isShipping || !parsed.status) return null;
-    return { status: parsed.status, itemName: parsed.itemName ?? undefined };
+    return classificationSchema.parse(extractJson(res));
   }
 }
 

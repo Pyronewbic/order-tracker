@@ -6,7 +6,7 @@ import {
   type ParsedMessage,
 } from "./gmail/client.js";
 import { buildUpdate, parseMessage, type ShipmentUpdate } from "./gmail/parser.js";
-import type { LlmParser } from "./gmail/llm-parser.js";
+import type { LlmClassification, LlmParser } from "./gmail/llm-parser.js";
 import { NotionClient, type OrderRow } from "./notion/client.js";
 import { matchRow } from "./notion/matcher.js";
 import { parseCharge } from "./subscriptions/parser.js";
@@ -189,8 +189,28 @@ async function runShipping(
 
     let update = parseMessage(msg);
     if (!update) {
-      update = await classifyViaLlm(label, msg, deps, ctx);
-      if (!update) continue; // disabled / dry-run / capped / not-shipping / error
+      // Status gap: the regex couldn't classify this email — ask the LLM.
+      if (!deps.llm) {
+        await log.warn(`[${label}] Skipped (no status; LLM off): "${msg.subject}".`);
+        continue;
+      }
+      const cls = await callLlm(label, msg, deps, ctx);
+      if (!cls) continue; // dry-run / capped / error (already logged)
+      if (!cls.isShipping || !cls.status) {
+        await log.info(`[${label}] LLM: not an order/shipment: "${msg.subject}".`);
+        continue;
+      }
+      update = buildUpdate(msg, cls.status, cls.itemName ?? undefined);
+      if (!update.category && cls.category) update.category = cls.category;
+      update.tags = mergeTags(update.tags, cls.tags);
+    } else if (deps.llm && !update.category && !cfg.DRY_RUN) {
+      // Classification gap: a status was found but the item couldn't be typed —
+      // let the LLM fill category + tags (gaps only, bounded by the per-tick cap).
+      const cls = await callLlm(label, msg, deps, ctx);
+      if (cls) {
+        if (cls.category) update.category = cls.category;
+        update.tags = mergeTags(update.tags, cls.tags);
+      }
     }
 
     const row = resolveRow(label, update, ctx, state, cfg.MATCH_THRESHOLD);
@@ -208,7 +228,7 @@ async function runShipping(
       continue;
     }
 
-    await applyShipmentUpdate(label, msg, row, update, deps, ctx);
+    await applyShipmentUpdate(label, row, update, deps, ctx);
   }
 }
 
@@ -253,7 +273,6 @@ function resolveRow(
 /** Apply (or skip) a resolved update, enforcing the runtime guardrails. */
 async function applyShipmentUpdate(
   label: string,
-  msg: ParsedMessage,
   row: OrderRow,
   update: ShipmentUpdate,
   deps: Deps,
@@ -263,24 +282,27 @@ async function applyShipmentUpdate(
 
   const decision = planUpdate(row, update);
   const willSetStatus = decision === "apply";
-  // Backfill the category only when we detected one and the row has none — never
-  // overwrite a category the user set manually.
+  // Backfill category only when detected and the row has none (never overwrite a
+  // manual value). Tags merge in — keep existing, add only the new ones.
   const categoryToSet = update.category && !row.category ? update.category : undefined;
+  const newTags = update.tags.filter((t) => !row.tags.includes(t));
+  const tagsToSet = newTags.length > 0 ? [...row.tags, ...newTags] : undefined;
 
   if (decision === "regress") {
     await log.warn(
       `[${label}] Skipped regression for "${row.book}": ${row.status || "(unset)"} ✗→ ${update.status}.`,
     );
-  } else if (decision === "noop" && !categoryToSet) {
+  } else if (decision === "noop" && !categoryToSet && !tagsToSet) {
     await log.info(`[${label}] No change: "${row.book}" already ${update.status}.`);
   }
 
-  if (!willSetStatus && !categoryToSet) return; // nothing to write
+  if (!willSetStatus && !categoryToSet && !tagsToSet) return; // nothing to write
 
   if (cfg.DRY_RUN) {
     const parts: string[] = [];
     if (willSetStatus) parts.push(`status → ${update.status}`);
     if (categoryToSet) parts.push(`category → ${categoryToSet}`);
+    if (tagsToSet) parts.push(`+tags [${newTags.join(", ")}]`);
     await log.info(`[${label}] [dry-run] would set "${row.book}": ${parts.join(", ")}.`);
     return;
   }
@@ -289,8 +311,7 @@ async function applyShipmentUpdate(
     await notion.applyUpdate(row, {
       status: willSetStatus ? update.status : undefined,
       category: categoryToSet,
-      detail: update.detail,
-      at: new Date(msg.internalDateMs),
+      tags: tagsToSet,
     });
     ctx.updates++;
     if (willSetStatus) {
@@ -300,47 +321,51 @@ async function applyShipmentUpdate(
       await log.change(row.book, update.status, update.detail, label);
       await notifier.notifyStatusChange(row.book, update.status, update.detail, label);
     }
-    if (categoryToSet) {
-      row.category = categoryToSet;
-      if (!willSetStatus) await log.info(`[${label}] Categorized "${row.book}" → ${categoryToSet}.`);
+    if (categoryToSet) row.category = categoryToSet;
+    if (tagsToSet) row.tags = tagsToSet;
+    if (!willSetStatus) {
+      const bits: string[] = [];
+      if (categoryToSet) bits.push(`category ${categoryToSet}`);
+      if (newTags.length) bits.push(`tags [${newTags.join(", ")}]`);
+      if (bits.length) await log.info(`[${label}] Tagged "${row.book}": ${bits.join("; ")}.`);
     }
   } catch (err) {
     await log.error(`[${label}] Failed updating "${row.book}": ${String(err)}`);
   }
 }
 
+/** Union of two tag lists, de-duplicated, order-stable. */
+function mergeTags(a: string[], b: string[]): string[] {
+  return [...new Set([...a, ...b])];
+}
+
 /**
- * Run the LLM fallback for a message the regex parser couldn't classify.
- * Returns a built update, or null when the fallback is unavailable or declines.
- * Enforces the cost/blast-radius controls: opt-in only, skipped in dry-run, and
- * a per-tick call cap counted across all accounts (the watermark has already
- * advanced in the caller, so a skipped message is never retried).
+ * Make one gated LLM call. Returns the classification, or null when the call was
+ * skipped (dry-run / per-tick cap) or errored — all logged. The caller must
+ * have already confirmed `deps.llm` is set. Enforces the cost/blast-radius
+ * controls: skipped in dry-run, and a per-tick cap counted across all accounts
+ * (the watermark has already advanced, so a skipped message is never retried).
  */
-async function classifyViaLlm(
+async function callLlm(
   label: string,
   msg: ParsedMessage,
   deps: Deps,
   ctx: TickContext,
-): Promise<ShipmentUpdate | null> {
+): Promise<LlmClassification | null> {
   const { cfg, log, llm, notifier } = deps;
+  if (!llm) return null;
 
-  if (!llm) {
-    await log.warn(`[${label}] Skipped (no status; LLM fallback off): "${msg.subject}".`);
-    return null;
-  }
   if (cfg.DRY_RUN) {
-    await log.info(`[${label}] [dry-run] LLM fallback skipped for "${msg.subject}".`);
+    await log.info(`[${label}] [dry-run] LLM call skipped for "${msg.subject}".`);
     return null;
   }
 
   if (ctx.llmCalls >= cfg.MAX_LLM_CALLS_PER_TICK) {
     if (!ctx.llmCapAlerted) {
       ctx.llmCapAlerted = true;
-      await log.warn(
-        `LLM call cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick) reached; skipping further fallback this tick.`,
-      );
+      await log.warn(`LLM call cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick) reached; skipping further LLM calls this tick.`);
       await notifier.notify(
-        `⚠️ Order tracker hit the LLM fallback cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick). ` +
+        `⚠️ Order tracker hit the LLM cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick). ` +
           `Remaining unclassified mail was skipped — check your shipping query.`,
       );
     }
@@ -351,14 +376,9 @@ async function classifyViaLlm(
   // Count the attempt before the call, so an error still consumes cap budget.
   ctx.llmCalls++;
   try {
-    const result = await llm.classify(msg);
-    if (!result) {
-      await log.info(`[${label}] LLM: not a shipping update: "${msg.subject}".`);
-      return null;
-    }
-    return buildUpdate(msg, result.status, result.itemName);
+    return await llm.classify(msg);
   } catch (err) {
-    await log.error(`[${label}] LLM fallback error for "${msg.subject}": ${String(err)}`);
+    await log.error(`[${label}] LLM error for "${msg.subject}": ${String(err)}`);
     return null;
   }
 }

@@ -5,7 +5,7 @@ database with the latest status. Designed to run as a persistent process on a
 Mac mini via PM2.
 
 ```
-Gmail (Amazon + carriers) ──parse──▶ status + item/tracking# ──match──▶ Notion row ──▶ Status + Notes
+Gmail (Amazon + carriers) ──parse──▶ status + item/tracking# ──match──▶ Notion row ──▶ Status + Category + Tags
                                                                               │
                                                        Telegram ◀── per-event + daily digest
 Gmail (receipts) ──parse──▶ merchant + amount ──history──▶ recurring? ──▶ Telegram alert
@@ -14,7 +14,7 @@ Gmail (receipts) ──parse──▶ merchant + amount ──history──▶ r
 ## Features
 
 - **Multi-carrier shipment tracking** — Amazon, UPS, FedEx, USPS, India Post.
-- **Notion sync** — sets **Status** and appends a timestamped line to **Notes**.
+- **Notion sync** — sets **Status** and fills **Category** + **Tags**.
 - **Telegram notifications** — a push on every status change ([optional](#telegram-notifications-optional)).
 - **[Daily digest](#daily-digest)** — one scheduled summary of everything in transit.
 - **[Subscription detection](#subscription-detection)** — flags recurring charges from receipt emails.
@@ -36,19 +36,24 @@ Delivered** and never regress (a late, out-of-order email can't un-deliver a
 package). `Delayed` can be set while a package is in motion and is superseded
 once it moves again; `Cancelled` and `Returned` are terminal.
 
-Each row is also tagged with a **Category** (`Game`, `Book`, `Accessory`,
-`Electronics`, `Digital`, `Other`), inferred by keyword from the item name. The
-category is filled only when a row's Category is blank, so any value you set
-manually is never overwritten. Keyword inference reliably catches accessories,
-books, digital codes, and known game franchises; arbitrary titles it can't place
-are left blank for you to set. Digital orders (codes/downloads) have no shipment
-and are logged but not tracked as packages.
+Each row also gets a **Category** (`Game`/`Book`/`Accessory`/`Electronics`/
+`Digital`/`Other`) and **Tags** (franchise like `Zelda`/`Mario`, plus attributes
+like `Preorder`/`Guide`/`Limited Edition`/`Switch 2`), inferred by keyword from
+the item name. Category is filled only when blank (a manual value is never
+overwritten) and Tags are *merged* in (tags you add by hand are kept). Keyword
+inference reliably catches accessories, books, digital codes, and known game
+franchises; titles it can't place are left for you to set — or, if the optional
+LLM is enabled (see [LLM fallback](#llm-fallback)), it fills the **gaps**:
+classifying status for mail the regex can't read and supplying a category + tags
+for items the keyword lists miss. Digital orders (codes/downloads) have no
+shipment and are logged but not tracked as packages.
 
 For each new email it parses the item/book name from the subject, fuzzy-matches
 it (via [Fuse.js](https://fusejs.io/)) against the **Book** title column, sets
-**Status**, and prepends a timestamped line to **Notes**. A per-account
-"newest processed" watermark is stored in `state.json` so nothing is reprocessed
-and one busy inbox can't suppress another (see
+**Status**, and fills **Category** + **Tags** when they're blank. (Notion's
+built-in *Last edited time* shows when a row last changed, so no Notes column is
+needed.) A per-account "newest processed" watermark is stored in `state.json` so
+nothing is reprocessed and one busy inbox can't suppress another (see
 [Multiple Gmail accounts](#multiple-gmail-accounts)).
 
 **Carrier-only emails** (UPS/FedEx/etc.) usually carry a tracking number but no
@@ -67,9 +72,10 @@ the retailer email, not the carrier.
   - **Book** — `Title`
   - **Status** — `Select` with options `Ordered`, `In Transit`, `Delayed`,
     `Arriving Soon`, `Delivered`, `Cancelled`, `Returned`
-  - **Notes** — `Text`
   - **Category** — `Select` with options `Game`, `Book`, `Accessory`,
     `Electronics`, `Digital`, `Other` (the tracker fills this when blank)
+  - **Tags** — `Multi-select` (franchise + attributes; the tracker merges in
+    tags it detects and never removes ones you add)
 
 ## Setup
 
@@ -228,8 +234,8 @@ separately and yields its own refresh token.
   `<label>` in **`accounts.json`** (gitignored, `0600`). Run it once per inbox.
 - `npm run accounts` lists the configured labels.
 - Every account uses the same `GMAIL_QUERY` / `SUBSCRIPTION_QUERY`.
-- The source label appears in logs and Telegram messages (e.g. `[work]`); Notion
-  **Notes** stay clean.
+- The source label appears in logs and Telegram messages (e.g. `[work]`); the
+  Notion row itself stays clean (no per-account clutter).
 
 Each account keeps its **own** watermark in `state.json`, so a busy inbox can't
 advance past — and suppress — mail in a quieter one. Accounts are polled
@@ -274,15 +280,17 @@ runs least-privilege and defends against runaway behavior:
 
 ## LLM fallback
 
-Optionally, shipping emails the deterministic regex parser **can't** classify can
-be sent to Claude for a status verdict. It's **opt-in and off by default**.
+Optionally, Claude fills the **gaps** the deterministic parser leaves. It's
+**opt-in and off by default**, and only ever runs on gaps — never the whole feed.
 
 - **Enable:** set `LLM_FALLBACK=true` **and** `ANTHROPIC_API_KEY`. If the key is
   missing the fallback stays disabled (with a warning).
-- **When it runs:** only for a message `parseMessage` returns `null` for — the
-  regex parser remains the default path. The LLM supplies only the status (and
-  optionally an item name); tracking numbers are always extracted deterministically
-  from the email, never invented by the model.
+- **When it runs (gaps only):** (1) status — for a message `parseMessage` returns
+  `null` for (foreign-language/ambiguous); and (2) classification — when a status
+  was found but the keyword lists can't type the item, to supply a **category +
+  tags**. If the deterministic category is known, the LLM is not called. The LLM
+  supplies status, item name, category, and tags; tracking numbers are always
+  extracted deterministically, never invented by the model.
 - **Cost controls:** a per-tick cap (`MAX_LLM_CALLS_PER_TICK`, default 10) counted
   across **all** accounts bounds spend if a misconfigured query floods inboxes —
   once hit, the rest of the tick skips the fallback (one warning + one alert). The

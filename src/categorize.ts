@@ -45,3 +45,38 @@ export function classifyItem(signal: ItemSignal): OrderCategory | null {
   if (GAME.test(hay)) return "Game";
   return null;
 }
+
+// Franchise name → canonical tag. Extend with the series you buy.
+const FRANCHISES: [RegExp, string][] = [
+  [/zelda/i, "Zelda"],
+  [/mario/i, "Mario"],
+  [/pok[eé]mon|ポケモン/i, "Pokémon"],
+  [/xenoblade|ゼノブレイド/i, "Xenoblade"],
+  [/fire emblem|ファイアーエムブレム/i, "Fire Emblem"],
+  [/metroid/i, "Metroid"],
+  [/kirby/i, "Kirby"],
+  [/splatoon/i, "Splatoon"],
+  [/animal crossing/i, "Animal Crossing"],
+  [/donkey kong/i, "Donkey Kong"],
+  [/final fantasy/i, "Final Fantasy"],
+  [/dragon quest/i, "Dragon Quest"],
+];
+
+/**
+ * Deterministic tags for an order: franchise(s) plus a few attributes
+ * (Preorder, Guide, Limited Edition, Switch 2, amiibo, Digital). Returns a
+ * de-duplicated list, possibly empty. The optional LLM fills tags only when this
+ * (and the category) come up empty.
+ */
+export function tagsFor(signal: ItemSignal): string[] {
+  const hay = `${signal.itemName}\n${signal.subject}`;
+  const tags = new Set<string>();
+  for (const [re, tag] of FRANCHISES) if (re.test(hay)) tags.add(tag);
+  if (/\bpre-?orders?\b|予約/i.test(hay)) tags.add("Preorder");
+  if (/\b(guide|encyclopedia|art ?book)\b/i.test(hay)) tags.add("Guide");
+  if (/\b(limited|collector'?s|special|deluxe) edition\b/i.test(hay)) tags.add("Limited Edition");
+  if (/\bswitch 2\b/i.test(hay)) tags.add("Switch 2");
+  if (/\bamiibo\b/i.test(hay)) tags.add("amiibo");
+  if (DIGITAL_SENDER.test(signal.from) || DIGITAL_TEXT.test(hay)) tags.add("Digital");
+  return [...tags];
+}

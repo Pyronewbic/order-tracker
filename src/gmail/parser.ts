@@ -1,7 +1,7 @@
 import type { OrderCategory, OrderStatus } from "../types.js";
 import type { ParsedMessage } from "./client.js";
 import { detectCarrier, extractTrackingNumbers } from "../carriers.js";
-import { classifyItem } from "../categorize.js";
+import { classifyItem, tagsFor } from "../categorize.js";
 
 export interface ShipmentUpdate {
   status: OrderStatus;
@@ -14,7 +14,9 @@ export interface ShipmentUpdate {
   carrier: string;
   /** Item-type category, or null when it can't be determined confidently. */
   category: OrderCategory | null;
-  /** Short human-readable detail recorded in Notion / notifications. */
+  /** Deterministic tags (franchise/attributes); may be empty. */
+  tags: string[];
+  /** Short human-readable detail used in logs / notifications. */
   detail: string;
 }
 
@@ -152,12 +154,14 @@ export function buildUpdate(
   const haystack = `${msg.subject}\n${msg.body || msg.snippet}`;
   const itemName = itemNameOverride?.trim() || extractItemName(msg.subject);
 
+  const signal = { itemName, from: msg.from, subject: msg.subject };
   return {
     status,
     itemName,
     trackingNumbers: extractTrackingNumbers(haystack, carrier),
     carrier: carrier?.name ?? "Unknown",
-    category: classifyItem({ itemName, from: msg.from, subject: msg.subject }),
+    category: classifyItem(signal),
+    tags: tagsFor(signal),
     detail: msg.subject.trim(),
   };
 }
