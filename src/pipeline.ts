@@ -9,6 +9,13 @@ import { buildUpdate, parseMessage, type ShipmentUpdate } from "./gmail/parser.j
 import type { LlmClassification, LlmParser } from "./gmail/llm-parser.js";
 import { NotionClient, type OrderRow } from "./notion/client.js";
 import { matchRow } from "./notion/matcher.js";
+import { isProtectedStatus, toNotionStatus } from "./notion/status-map.js";
+import {
+  isTerminalPackageStatus,
+  type ForwarderNotionClient,
+  type PackageUpdate,
+} from "./forwarder/notion.js";
+import { parseForwarderEmail, type ForwarderEvent } from "./forwarder/parser.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
 import type { Notifier } from "./telegram/client.js";
@@ -22,6 +29,8 @@ export interface Deps {
   log: Logger;
   /** Optional LLM fallback; null when disabled (opt-out or no API key). */
   llm: LlmParser | null;
+  /** Optional forwarder (ForwardMe) tracking; null when disabled. */
+  forwarder: ForwarderNotionClient | null;
 }
 
 /** Mutable per-tick accumulators: shared Notion rows + cross-account counters. */
@@ -96,6 +105,9 @@ export function planUpdate(
   const cur = row.status;
   const next = update.status;
   if (next === cur) return "noop";
+  // User-managed lifecycle states (e.g. To Reorder / To Sell) are owned by the
+  // human — a shipment email must never overwrite them.
+  if (isProtectedStatus(cur)) return "regress";
   if (isTerminalStatus(cur)) return "regress"; // terminal — nothing supersedes
   if (isTerminalStatus(next)) return "apply"; // cancel/return from any live state
   if (next === "Delayed") return cur === "Delivered" ? "regress" : "apply";
@@ -136,6 +148,11 @@ export async function runTick(
       await runSubscriptions(label, gmail, deps, ctx, state);
     } catch (err) {
       await log.error(`[${label}] subscription job failed: ${String(err)}`);
+    }
+    try {
+      await runForwarder(label, gmail, deps, state);
+    } catch (err) {
+      await log.error(`[${label}] forwarder job failed: ${String(err)}`);
     }
   }
 
@@ -281,7 +298,10 @@ async function applyShipmentUpdate(
   const { cfg, notion, notifier, log } = deps;
 
   const decision = planUpdate(row, update);
-  const willSetStatus = decision === "apply";
+  // A status the target DB has no option for (toNotionStatus → null) can't be
+  // written; treat it as not-applied so we don't falsely log/notify a change.
+  const statusWritable = toNotionStatus(update.status) !== null;
+  const willSetStatus = decision === "apply" && statusWritable;
   // Backfill category only when detected and the row has none (never overwrite a
   // manual value). Tags merge in — keep existing, add only the new ones.
   const categoryToSet = update.category && !row.category ? update.category : undefined;
@@ -291,6 +311,10 @@ async function applyShipmentUpdate(
   if (decision === "regress") {
     await log.warn(
       `[${label}] Skipped regression for "${row.book}": ${row.status || "(unset)"} ✗→ ${update.status}.`,
+    );
+  } else if (decision === "apply" && !statusWritable && !categoryToSet && !tagsToSet) {
+    await log.info(
+      `[${label}] No DB status for "${update.status}"; left "${row.book}" unchanged.`,
     );
   } else if (decision === "noop" && !categoryToSet && !tagsToSet) {
     await log.info(`[${label}] No change: "${row.book}" already ${update.status}.`);
@@ -380,6 +404,100 @@ async function callLlm(
   } catch (err) {
     await log.error(`[${label}] LLM error for "${msg.subject}": ${String(err)}`);
     return null;
+  }
+}
+
+/** Turn a parsed ForwardMe event into the fields to write to its package row. */
+function buildPackageUpdate(ev: ForwarderEvent): PackageUpdate {
+  const update: PackageUpdate = { status: "At Forwarder" };
+  if (ev.kind === "arrival") {
+    update.arrivedMs = ev.receivedMs;
+    update.from = ev.from;
+    update.contents = ev.contents;
+    update.declaredValue = ev.declaredValue;
+    update.weight = ev.weight;
+  } else if (ev.kind === "reminder" && typeof ev.daysLeft === "number") {
+    update.daysLeft = ev.daysLeft;
+    // A countdown goes stale; persist the concrete deadline it implies instead.
+    update.disposalByMs = ev.receivedMs + ev.daysLeft * 86_400_000;
+  }
+  return update;
+}
+
+/**
+ * Forwarder job for one account: parse ForwardMe arrival/reminder mail into the
+ * standalone "Forwarder Packages" DB, keyed by ForwardMe's opaque package code.
+ * Creates a row on first sight, updates it thereafter. A user-set `Shipped` is
+ * never reverted; outbound shipment emails (uncorrelatable to a code) are logged
+ * only. No-op unless the forwarder DB is configured.
+ */
+async function runForwarder(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  state: State,
+): Promise<void> {
+  const { cfg, log, forwarder } = deps;
+  if (!forwarder) return;
+
+  const watermark = accountState(state, label);
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.FORWARDER_QUERY,
+    watermark.forwarderLastMs,
+    log,
+    label,
+  );
+  if (messages.length === 0) {
+    await log.info(`[${label}] No new forwarder messages.`);
+    return;
+  }
+  await log.info(`[${label}] Processing ${messages.length} forwarder message(s).`);
+
+  const packages = await forwarder.listPackages();
+
+  for (const msg of messages) {
+    // Advance the watermark before any branch/skip so a message is processed once.
+    watermark.forwarderLastMs = Math.max(watermark.forwarderLastMs, msg.internalDateMs);
+
+    const ev = parseForwarderEmail(msg);
+    if (!ev) continue;
+    if (ev.kind === "outbound") {
+      await log.info(`[${label}] Forwarder shipment left the warehouse: "${msg.subject}".`);
+      continue;
+    }
+
+    const code = ev.code as string; // arrival/reminder always carry a code
+    const update = buildPackageUpdate(ev);
+    const existing = packages.get(code);
+
+    if (existing && isTerminalPackageStatus(existing.status)) {
+      await log.info(`[${label}] Package ${code} already ${existing.status}; leaving as-is.`);
+      continue;
+    }
+
+    if (cfg.DRY_RUN) {
+      await log.info(
+        `[${label}] [dry-run] would ${existing ? "update" : "create"} package ${code} ` +
+          `(${ev.kind}${ev.daysLeft != null ? `, ${ev.daysLeft}d left` : ""}).`,
+      );
+      continue;
+    }
+
+    try {
+      if (existing) {
+        // Don't rewrite Status if it already matches — avoids a needless write.
+        if (existing.status === update.status) delete update.status;
+        await forwarder.updatePackage(existing.pageId, update);
+        await log.info(`[${label}] Updated forwarder package ${code} (${ev.kind}).`);
+      } else {
+        const pageId = await forwarder.createPackage(code, update);
+        packages.set(code, { pageId, code, status: update.status ?? "At Forwarder" });
+        await log.info(`[${label}] New forwarder package ${code}.`);
+      }
+    } catch (err) {
+      await log.error(`[${label}] Failed upserting forwarder package ${code}: ${String(err)}`);
+    }
   }
 }
 

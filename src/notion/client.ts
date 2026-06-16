@@ -2,6 +2,7 @@ import { Client } from "@notionhq/client";
 import { z } from "zod";
 import type { OrderCategory, OrderStatus } from "../types.js";
 import { withRetry } from "../retry.js";
+import { fromNotionStatus, toNotionStatus } from "./status-map.js";
 
 /** A Notion database row reduced to the fields this tracker reads. */
 export interface OrderRow {
@@ -99,7 +100,7 @@ export class NotionClient {
         rows.push({
           pageId: parsed.data.id,
           book: plain(props.Book?.title),
-          status: props.Status?.select?.name ?? "",
+          status: fromNotionStatus(props.Status?.select?.name ?? ""),
           category: props.Category?.select?.name ?? "",
           tags: (props.Tags?.multi_select ?? []).map((t) => t.name),
         });
@@ -118,7 +119,12 @@ export class NotionClient {
    */
   async applyUpdate(row: OrderRow, update: RowUpdate): Promise<void> {
     const properties: Record<string, unknown> = {};
-    if (update.status) properties.Status = { select: { name: update.status } };
+    if (update.status) {
+      // Skip Status when the target DB has no equivalent (toNotionStatus → null),
+      // so a shipment-only status never auto-creates a junk option on a curated DB.
+      const notionStatus = toNotionStatus(update.status);
+      if (notionStatus) properties.Status = { select: { name: notionStatus } };
+    }
     if (update.category) properties.Category = { select: { name: update.category } };
     if (update.tags && update.tags.length > 0) {
       properties.Tags = { multi_select: update.tags.map((name) => ({ name })) };

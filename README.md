@@ -18,6 +18,7 @@ Gmail (receipts) ──parse──▶ merchant + amount ──history──▶ r
 - **Telegram notifications** — a push on every status change ([optional](#telegram-notifications-optional)).
 - **[Daily digest](#daily-digest)** — one scheduled summary of everything in transit.
 - **[Subscription detection](#subscription-detection)** — flags recurring charges from receipt emails.
+- **[Forwarder tracking](#forwarder-package-tracking)** — logs packages held at ForwardMe (arrival, contents, storage countdown) into a standalone Notion DB.
 
 ## How shipment tracking works
 
@@ -136,8 +137,10 @@ refresh token is written under that label into `accounts.json` (gitignored,
    its **Internal Integration Secret** → `NOTION_API_KEY`. The tracker only
    queries and updates pages, so the integration needs just **Read content** and
    **Update content** capabilities — leave **Insert content** and user
-   information off. Startup verifies access and exits with a remediation message
-   if the integration can't read the database.
+   information off. (Exception: the optional [forwarder feature](#forwarder-package-tracking)
+   auto-creates rows, so it additionally needs **Insert content**.) Startup
+   verifies access and exits with a remediation message if the integration can't
+   read the database.
 2. Open your database in Notion → **•••** menu → **Connections** → add your
    integration so it can read and update the database.
 3. `NOTION_DATABASE_ID` is pre-filled in `.env.example`
@@ -223,6 +226,31 @@ A first-time one-off purchase is recorded silently. This feature only notifies �
 it does **not** write to the Notion book database. Tune the query to match the
 receipt mail in your inbox; leave it unset to disable.
 
+## Forwarder package tracking
+
+Set `FORWARDER_DATABASE_ID` to track packages held at [ForwardMe](https://www.forwardme.com/)
+in a **separate** Notion database (not the book DB). ForwardMe identifies packages
+only by an opaque code (e.g. "L") with no item title, so this can't be linked to
+your book rows — it's a standalone view of *what's at the forwarder, unshipped, and
+how close to disposal*.
+
+On the same poll loop it parses three ForwardMe email types (`FORWARDER_QUERY`,
+default `from:automated@forwardme.com`) and upserts one row per package code:
+
+| Email | Effect on the package row |
+| --- | --- |
+| "🎉 Your package arrived…" | create/update: `Arrived`, `From`, `Contents`, `Declared Value`, `Weight`, Status `At Forwarder` |
+| "Last N Day for package X" / "approaching storage limit" | update `Days left` + a concrete `Disposal by` date |
+| "[SHIP] …" / "…flying to you" | logged only (outbound emails can't be tied to a package code) |
+
+The DB needs: **Package** (title), **Status** (select `At Forwarder`/`Shipped`),
+**Arrived**/**Disposal by** (date), **From**/**Contents**/**Declared Value**/**Weight**
+(text), **Days left** (number). The "unshipped" view is simply `Status = At Forwarder`.
+**Shipped** is yours to set manually and the tracker never reverts it (there's no
+reliable email signal for it). Unlike the book DB, this one auto-creates rows, so the
+integration needs **Insert content** on it (see step 4). A misconfiguration disables
+just this feature — the book tracker keeps running.
+
 ## Multiple Gmail accounts
 
 The tracker polls any number of Gmail accounts into the **one** Notion database,
@@ -255,9 +283,10 @@ runs least-privilege and defends against runaway behavior:
 - **Gmail scope** is `gmail.readonly` only — the minimum that still exposes
   message bodies (needed for status/tracking/amount). No send/modify scope is
   ever requested.
-- **Notion** uses only `databases.query` + `pages.update` (Read + Update content);
-  it never inserts or deletes. Startup runs an access check and exits with a clear
-  message if the integration isn't connected or lacks permission.
+- **Notion** uses only `databases.query` + `pages.update` (Read + Update content)
+  for the book DB; it never inserts or deletes there. (The optional forwarder DB
+  additionally uses `pages.create`.) Startup runs an access check and exits with a
+  clear message if the integration isn't connected or lacks permission.
 - **Secret redaction** — every log line and Telegram message is passed through a
   redactor built from the known secrets (client secret, all refresh tokens,
   Notion key, bot token, Anthropic key), so a stack trace can't leak a token.
@@ -318,6 +347,7 @@ single-account fallback. Optional keys:
   notifications, see [above](#5-telegram-notifications-optional).
 - **`DIGEST_CRON`** — enable the [daily digest](#daily-digest) (needs Telegram).
 - **`SUBSCRIPTION_QUERY`** — enable [subscription detection](#subscription-detection).
+- **`FORWARDER_DATABASE_ID`** / **`FORWARDER_QUERY`** — enable [forwarder tracking](#forwarder-package-tracking) (needs Insert content).
 - **Guardrails** (`DRY_RUN`, `MAX_UPDATES_PER_TICK`) — see
   [Permissions & guardrails](#permissions--guardrails).
 - **LLM fallback** (`LLM_FALLBACK`, `ANTHROPIC_API_KEY`, `LLM_MODEL`,
@@ -371,6 +401,9 @@ src/
   subscriptions/
     parser.ts         receipt mail → merchant + amount
     tracker.ts        recurring-charge classification
+  forwarder/
+    parser.ts         ForwardMe mail → arrival / reminder / outbound event
+    notion.ts         standalone "Forwarder Packages" DB client (upsert by code)
   telegram/
     client.ts         Telegram notifier (sendMessage); no-op / dry-run variants
     chat-id.ts        getUpdates helper (npm run telegram:chat-id)

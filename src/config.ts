@@ -46,6 +46,10 @@ const envSchema = z
     DIGEST_CRON: z.string().min(1).optional(),
     // Gmail query for receipt/billing mail. Unset → subscription detection off.
     SUBSCRIPTION_QUERY: z.string().min(1).optional(),
+    // Standalone "Forwarder Packages" Notion DB. Unset → forwarder tracking off.
+    FORWARDER_DATABASE_ID: z.string().min(1).optional(),
+    // Gmail query for ForwardMe notifications (same query for every account).
+    FORWARDER_QUERY: z.string().default("from:automated@forwardme.com"),
     OAUTH_REDIRECT_PORT: z.coerce.number().int().positive().default(4567),
     MATCH_THRESHOLD: z.coerce.number().min(0).max(1).default(0.4),
     STATE_FILE: z.string().default("state.json"),
