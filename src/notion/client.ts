@@ -1,6 +1,7 @@
 import { Client } from "@notionhq/client";
 import { z } from "zod";
 import type { OrderStatus } from "../types.js";
+import { withRetry } from "../retry.js";
 
 /** A Notion database row reduced to the fields this tracker reads. */
 export interface OrderRow {
@@ -48,17 +49,39 @@ export class NotionClient {
     this.notion = new Client({ auth: apiKey });
   }
 
+  /**
+   * Confirm the integration can read the database before the poll loop starts.
+   * Surfaces a misconfiguration (integration not connected, or lacking the
+   * Read/Update content capabilities) as a clear, actionable error instead of a
+   * cryptic failure on the first tick.
+   */
+  async verifyAccess(): Promise<void> {
+    try {
+      await withRetry(() =>
+        this.notion.databases.retrieve({ database_id: this.databaseId }),
+      );
+    } catch (err) {
+      throw new Error(
+        `Cannot access Notion database ${this.databaseId}: ${String(err)}. ` +
+          `Connect the integration to the database (••• → Connections) and grant ` +
+          `it "Read content" + "Update content" (no Insert/Delete or user info needed).`,
+      );
+    }
+  }
+
   /** Fetch every row in the database (following pagination). */
   async listRows(): Promise<OrderRow[]> {
     const rows: OrderRow[] = [];
     let cursor: string | undefined;
 
     do {
-      const res = await this.notion.databases.query({
-        database_id: this.databaseId,
-        start_cursor: cursor,
-        page_size: 100,
-      });
+      const res = await withRetry(() =>
+        this.notion.databases.query({
+          database_id: this.databaseId,
+          start_cursor: cursor,
+          page_size: 100,
+        }),
+      );
 
       for (const raw of res.results) {
         const parsed = pageSchema.safeParse(raw);
@@ -92,13 +115,15 @@ export class NotionClient {
     const line = `[${at.toISOString()}] ${status} — ${detail}`;
     const combined = row.notes ? `${line}\n${row.notes}` : line;
 
-    await this.notion.pages.update({
-      page_id: row.pageId,
-      properties: {
-        Status: { select: { name: status } },
-        Notes: { rich_text: toRichText(combined) },
-      },
-    });
+    await withRetry(() =>
+      this.notion.pages.update({
+        page_id: row.pageId,
+        properties: {
+          Status: { select: { name: status } },
+          Notes: { rich_text: toRichText(combined) },
+        },
+      }),
+    );
   }
 }
 

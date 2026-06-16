@@ -1,7 +1,9 @@
 node_modules/
 dist/
 .env
+accounts.json
 state.json
 tracker.log
 *.log
+*.tmp
 .DS_Store

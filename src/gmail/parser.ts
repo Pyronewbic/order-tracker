@@ -93,25 +93,38 @@ function cleanItemName(raw: string): string {
 }
 
 /**
+ * Assemble a {@link ShipmentUpdate} for a known status. Carrier, tracking
+ * numbers, and detail are always derived deterministically from the email here;
+ * the LLM fallback supplies only `status` (and optionally `itemNameOverride`) so
+ * tracking numbers are never invented by the model.
+ */
+export function buildUpdate(
+  msg: ParsedMessage,
+  status: OrderStatus,
+  itemNameOverride?: string,
+): ShipmentUpdate {
+  const carrier = detectCarrier(msg.from);
+  const haystack = `${msg.subject}\n${msg.body || msg.snippet}`;
+
+  return {
+    status,
+    itemName: itemNameOverride?.trim() || extractItemName(msg.subject),
+    trackingNumbers: extractTrackingNumbers(haystack, carrier),
+    carrier: carrier?.name ?? "Unknown",
+    detail: msg.subject.trim(),
+  };
+}
+
+/**
  * Parse a Gmail message into a {@link ShipmentUpdate}, or null if no shipping
- * status can be determined. Unlike before, an email with a recognizable status
- * but no item name is still returned — it can be matched to a Notion row by
- * tracking number instead.
+ * status can be determined. An email with a recognizable status but no item
+ * name is still returned — it can be matched to a Notion row by tracking number
+ * instead. Returning null is the signal for the optional LLM fallback to try.
  */
 export function parseMessage(msg: ParsedMessage): ShipmentUpdate | null {
   // Subject is the most reliable status signal; fall back to the body.
   const status =
     detectStatus(msg.subject) ?? detectStatus(msg.body) ?? detectStatus(msg.snippet);
   if (!status) return null;
-
-  const carrier = detectCarrier(msg.from);
-  const haystack = `${msg.subject}\n${msg.body || msg.snippet}`;
-
-  return {
-    status,
-    itemName: extractItemName(msg.subject),
-    trackingNumbers: extractTrackingNumbers(haystack, carrier),
-    carrier: carrier?.name ?? "Unknown",
-    detail: msg.subject.trim(),
-  };
+  return buildUpdate(msg, status);
 }

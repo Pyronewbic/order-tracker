@@ -1,0 +1,383 @@
+import type { RuntimeConfig } from "./config.js";
+import type { Logger } from "./logger.js";
+import { accountState, type State } from "./state.js";
+import {
+  GmailClient,
+  type ParsedMessage,
+} from "./gmail/client.js";
+import { buildUpdate, parseMessage, type ShipmentUpdate } from "./gmail/parser.js";
+import type { LlmParser } from "./gmail/llm-parser.js";
+import { NotionClient, type OrderRow } from "./notion/client.js";
+import { matchRow } from "./notion/matcher.js";
+import { parseCharge } from "./subscriptions/parser.js";
+import { classifyCharge } from "./subscriptions/tracker.js";
+import type { Notifier } from "./telegram/client.js";
+import { statusRank } from "./types.js";
+
+/** Shared collaborators for a poll. Built once at startup, reused every tick. */
+export interface Deps {
+  cfg: RuntimeConfig;
+  notion: NotionClient;
+  notifier: Notifier;
+  log: Logger;
+  /** Optional LLM fallback; null when disabled (opt-out or no API key). */
+  llm: LlmParser | null;
+}
+
+/** Mutable per-tick accumulators: shared Notion rows + cross-account counters. */
+interface TickContext {
+  rows: OrderRow[];
+  rowsById: Map<string, OrderRow>;
+  /** Notion updates applied this tick (for the update-cap alarm). */
+  updates: number;
+  /** LLM calls made this tick across ALL accounts (for the per-tick cap). */
+  llmCalls: number;
+  /** Whether the one-shot LLM-cap alert has already fired this tick. */
+  llmCapAlerted: boolean;
+}
+
+/** Summary of what a tick did (used by callers/tests). */
+export interface TickStats {
+  updates: number;
+  llmCalls: number;
+}
+
+/** Fetch messages newer than `sinceMs`, oldest first, for a given query. */
+export async function fetchNewMessages(
+  gmail: GmailClient,
+  query: string,
+  sinceMs: number,
+  log?: Logger,
+  label?: string,
+): Promise<ParsedMessage[]> {
+  // Gmail's `after:` is second-resolution; subtract 1s to avoid an off-by-one
+  // miss, then de-dup precisely against the stored millisecond timestamp.
+  const afterSec = sinceMs > 0 ? Math.floor(sinceMs / 1000) - 1 : undefined;
+  const ids = await gmail.listMessageIds(query, afterSec);
+  if (ids.length === 0) return [];
+
+  // allSettled so one un-fetchable message (malformed/oversized, a transient
+  // error) can't wedge the whole inbox — failures are skipped and retried next
+  // tick once newer mail advances the watermark past them.
+  const settled = await Promise.allSettled(ids.map((id) => gmail.getMessage(id)));
+  const fetched: ParsedMessage[] = [];
+  let failures = 0;
+  for (const r of settled) {
+    if (r.status === "fulfilled") fetched.push(r.value);
+    else failures++;
+  }
+  if (failures > 0 && log) {
+    await log.warn(
+      `${label ? `[${label}] ` : ""}Skipped ${failures} message(s) that failed to fetch; will retry next tick.`,
+    );
+  }
+
+  return fetched
+    .filter((m) => m.internalDateMs > sinceMs)
+    .sort((a, b) => a.internalDateMs - b.internalDateMs);
+}
+
+/**
+ * Decide what to do with a status update for a row:
+ *  - "noop": new status equals current — skip write + notify.
+ *  - "regress": new status ranks below current — a late/out-of-order email
+ *    can't un-deliver a package; skip + log.
+ *  - "apply": new status advances the row — write it.
+ */
+export function planUpdate(
+  row: OrderRow,
+  update: ShipmentUpdate,
+): "noop" | "regress" | "apply" {
+  if (update.status === row.status) return "noop";
+  if (statusRank(update.status) < statusRank(row.status)) return "regress";
+  return "apply";
+}
+
+/**
+ * Run one poll across all accounts: fetch Notion rows once, then process each
+ * account's shipping + subscription jobs sequentially with per-job failure
+ * isolation. Returns per-tick counters. Does NOT load or persist state — the
+ * caller owns that so a single state file is written once per tick.
+ */
+export async function runTick(
+  deps: Deps,
+  gmailByLabel: Map<string, GmailClient>,
+  state: State,
+): Promise<TickStats> {
+  const { cfg, notion, notifier, log } = deps;
+
+  const rows = await notion.listRows();
+  const ctx: TickContext = {
+    rows,
+    rowsById: new Map(rows.map((r) => [r.pageId, r])),
+    updates: 0,
+    llmCalls: 0,
+    llmCapAlerted: false,
+  };
+
+  for (const [label, gmail] of gmailByLabel) {
+    try {
+      await runShipping(label, gmail, deps, ctx, state);
+    } catch (err) {
+      await log.error(`[${label}] shipping job failed: ${String(err)}`);
+    }
+    try {
+      await runSubscriptions(label, gmail, deps, ctx, state);
+    } catch (err) {
+      await log.error(`[${label}] subscription job failed: ${String(err)}`);
+    }
+  }
+
+  // Soft alarm (not a hard stop): an unusually large tick likely means a
+  // misconfigured query. A legitimate first-run backlog still completes.
+  if (ctx.updates > cfg.MAX_UPDATES_PER_TICK) {
+    await log.warn(
+      `Applied ${ctx.updates} updates this tick (> ${cfg.MAX_UPDATES_PER_TICK}); possible query misconfiguration.`,
+    );
+    await notifier.notify(
+      `⚠️ Order tracker applied ${ctx.updates} updates in one tick ` +
+        `(cap ${cfg.MAX_UPDATES_PER_TICK}). Check your shipping query if this is unexpected.`,
+    );
+  }
+
+  return { updates: ctx.updates, llmCalls: ctx.llmCalls };
+}
+
+/** Shipping job for one account: match emails to rows and push status updates. */
+async function runShipping(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  ctx: TickContext,
+  state: State,
+): Promise<void> {
+  const { cfg, log } = deps;
+  const watermark = accountState(state, label);
+
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.GMAIL_QUERY,
+    watermark.lastProcessedMs,
+    log,
+    label,
+  );
+  if (messages.length === 0) {
+    await log.info(`[${label}] No new shipping messages.`);
+    return;
+  }
+  await log.info(`[${label}] Processing ${messages.length} shipping message(s).`);
+
+  for (const msg of messages) {
+    // Advance the watermark BEFORE any branch, skip, LLM call, or failure, so a
+    // message is processed at most once ever — including negative LLM verdicts,
+    // which must never trigger a second paid call on a later tick.
+    watermark.lastProcessedMs = Math.max(
+      watermark.lastProcessedMs,
+      msg.internalDateMs,
+    );
+
+    let update = parseMessage(msg);
+    if (!update) {
+      update = await classifyViaLlm(label, msg, deps, ctx);
+      if (!update) continue; // disabled / dry-run / capped / not-shipping / error
+    }
+
+    const row = resolveRow(label, update, ctx, state, cfg.MATCH_THRESHOLD);
+    if (!row) {
+      const ident =
+        update.itemName ||
+        `${update.carrier} ${update.trackingNumbers.join(", ") || "(no tracking #)"}`;
+      await log.warn(`[${label}] No Notion match for ${ident} (subject: "${msg.subject}").`);
+      continue;
+    }
+
+    await applyShipmentUpdate(label, msg, row, update, deps, ctx);
+  }
+}
+
+/**
+ * Resolve a {@link ShipmentUpdate} to a Notion row. Primary: fuzzy-match the
+ * item name and, on success, record this update's tracking numbers so later
+ * carrier-only emails (from any account) resolve to the same row. Fallback:
+ * resolve via a previously-recorded tracking link.
+ */
+function resolveRow(
+  label: string,
+  update: ShipmentUpdate,
+  ctx: TickContext,
+  state: State,
+  threshold: number,
+): OrderRow | undefined {
+  let row: OrderRow | undefined;
+
+  if (update.itemName) {
+    const match = matchRow(update.itemName, ctx.rows, threshold);
+    if (match) {
+      row = match.row;
+      for (const tn of update.trackingNumbers) {
+        state.links[tn] = { pageId: row.pageId, book: row.book };
+      }
+    }
+  }
+
+  if (!row) {
+    for (const tn of update.trackingNumbers) {
+      const link = state.links[tn];
+      if (link) {
+        row = ctx.rowsById.get(link.pageId);
+        if (row) break;
+      }
+    }
+  }
+
+  return row;
+}
+
+/** Apply (or skip) a resolved update, enforcing the runtime guardrails. */
+async function applyShipmentUpdate(
+  label: string,
+  msg: ParsedMessage,
+  row: OrderRow,
+  update: ShipmentUpdate,
+  deps: Deps,
+  ctx: TickContext,
+): Promise<void> {
+  const { cfg, notion, notifier, log } = deps;
+
+  const decision = planUpdate(row, update);
+  if (decision === "noop") {
+    await log.info(`[${label}] No change: "${row.book}" already ${update.status}.`);
+    return;
+  }
+  if (decision === "regress") {
+    await log.warn(
+      `[${label}] Skipped regression for "${row.book}": ${row.status || "(unset)"} ✗→ ${update.status}.`,
+    );
+    return;
+  }
+
+  if (cfg.DRY_RUN) {
+    await log.info(`[${label}] [dry-run] would set "${row.book}" → ${update.status} (${update.detail}).`);
+    return;
+  }
+
+  try {
+    await notion.applyUpdate(
+      row,
+      update.status,
+      update.detail,
+      new Date(msg.internalDateMs),
+    );
+    ctx.updates++;
+    // Reflect the write in the in-memory row so later messages this tick see the
+    // new status (keeps the no-op / regression guards accurate within a tick).
+    row.status = update.status;
+    await log.change(row.book, update.status, update.detail, label);
+    await notifier.notifyStatusChange(row.book, update.status, update.detail, label);
+  } catch (err) {
+    await log.error(`[${label}] Failed updating "${row.book}": ${String(err)}`);
+  }
+}
+
+/**
+ * Run the LLM fallback for a message the regex parser couldn't classify.
+ * Returns a built update, or null when the fallback is unavailable or declines.
+ * Enforces the cost/blast-radius controls: opt-in only, skipped in dry-run, and
+ * a per-tick call cap counted across all accounts (the watermark has already
+ * advanced in the caller, so a skipped message is never retried).
+ */
+async function classifyViaLlm(
+  label: string,
+  msg: ParsedMessage,
+  deps: Deps,
+  ctx: TickContext,
+): Promise<ShipmentUpdate | null> {
+  const { cfg, log, llm, notifier } = deps;
+
+  if (!llm) {
+    await log.warn(`[${label}] Skipped (no status; LLM fallback off): "${msg.subject}".`);
+    return null;
+  }
+  if (cfg.DRY_RUN) {
+    await log.info(`[${label}] [dry-run] LLM fallback skipped for "${msg.subject}".`);
+    return null;
+  }
+
+  if (ctx.llmCalls >= cfg.MAX_LLM_CALLS_PER_TICK) {
+    if (!ctx.llmCapAlerted) {
+      ctx.llmCapAlerted = true;
+      await log.warn(
+        `LLM call cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick) reached; skipping further fallback this tick.`,
+      );
+      await notifier.notify(
+        `⚠️ Order tracker hit the LLM fallback cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick). ` +
+          `Remaining unclassified mail was skipped — check your shipping query.`,
+      );
+    }
+    await log.info(`[${label}] LLM cap reached; skipping: "${msg.subject}".`);
+    return null;
+  }
+
+  // Count the attempt before the call, so an error still consumes cap budget.
+  ctx.llmCalls++;
+  try {
+    const result = await llm.classify(msg);
+    if (!result) {
+      await log.info(`[${label}] LLM: not a shipping update: "${msg.subject}".`);
+      return null;
+    }
+    return buildUpdate(msg, result.status, result.itemName);
+  } catch (err) {
+    await log.error(`[${label}] LLM fallback error for "${msg.subject}": ${String(err)}`);
+    return null;
+  }
+}
+
+/** Subscription job for one account: scan receipt mail, alert on charges. */
+async function runSubscriptions(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  _ctx: TickContext,
+  state: State,
+): Promise<void> {
+  const { cfg, notifier, log } = deps;
+  if (!cfg.SUBSCRIPTION_QUERY) return;
+
+  const watermark = accountState(state, label);
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.SUBSCRIPTION_QUERY,
+    watermark.subscriptionLastMs,
+    log,
+    label,
+  );
+  if (messages.length === 0) {
+    await log.info(`[${label}] No new receipt messages.`);
+    return;
+  }
+  await log.info(`[${label}] Scanning ${messages.length} receipt message(s).`);
+
+  for (const msg of messages) {
+    watermark.subscriptionLastMs = Math.max(
+      watermark.subscriptionLastMs,
+      msg.internalDateMs,
+    );
+
+    const charge = parseCharge(msg);
+    if (!charge) continue;
+
+    const verdict = classifyCharge(
+      charge,
+      state.subscriptions[charge.merchant.toLowerCase()],
+      msg.internalDateMs,
+    );
+    state.subscriptions[verdict.key] = verdict.record;
+
+    if (verdict.alert) {
+      await log.info(`[${label}] Charge alert: ${charge.merchant} ${charge.amount}`);
+      // In dry-run the notifier logs instead of sending (DryRunNotifier).
+      await notifier.notify(verdict.alert);
+    }
+  }
+}

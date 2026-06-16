@@ -11,10 +11,12 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "auth": "tsx src/auth.ts",
+    "accounts": "tsx src/auth.ts -- --list",
     "telegram:chat-id": "tsx src/telegram/chat-id.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.2",
     "@notionhq/client": "^2.2.15",
     "dotenv": "^16.4.5",
     "fuse.js": "^7.0.0",
