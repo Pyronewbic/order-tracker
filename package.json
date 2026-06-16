@@ -1,0 +1,31 @@
+{
+  "name": "order-tracker",
+  "version": "1.0.0",
+  "description": "Poll Gmail for Amazon shipping emails and update a Notion order database.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "auth": "tsx src/auth.ts",
+    "telegram:chat-id": "tsx src/telegram/chat-id.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.2.15",
+    "dotenv": "^16.4.5",
+    "fuse.js": "^7.0.0",
+    "googleapis": "^144.0.0",
+    "node-cron": "^3.0.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}
