@@ -22,7 +22,7 @@ const ACCESSORY =
   /\b(?:controllers?|joy-?cons?|joysticks?|gamepads?|grips?|cases?|covers?|pouches?|sleeves?|cables?|chargers?|charging|docks?|stands?|mounts?|screen protectors?|tempered glass|head ?sets?|earbuds?|skins?|straps?|adapters?|thumb ?grips?)\b/i;
 
 const BOOK =
-  /\b(?:books?|encyclopedias?|guides?|art ?books?|mangas?|novels?|hardcovers?|paperbacks?|strategy guides?|official guides?|chronicles?|companions?|lore)\b/i;
+  /\b(?:books?|encyclopedias?|guides?|art ?books?|mangas?|novels?|hardcovers?|paperbacks?|strategy guides?|official guides?|chronicles?|compendiums?|companions?|lore)\b/i;
 
 const ELECTRONICS =
   /\b(?:consoles?|nintendo switch 2|ps5|playstation 5|xbox|monitors?|ssd|hard drives?|routers?|laptops?|tablets?|speakers?)\b/i;
