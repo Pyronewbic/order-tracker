@@ -9,6 +9,7 @@ import { LlmParser } from "./gmail/llm-parser.js";
 import { NotionClient } from "./notion/client.js";
 import { ForwarderNotionClient } from "./forwarder/notion.js";
 import { GamesNotionClient } from "./games/notion.js";
+import { SpendSummary } from "./summary/notion.js";
 import { sendDigest } from "./digest.js";
 import { createNotifier } from "./telegram/client.js";
 import { runTick, type Deps } from "./pipeline.js";
@@ -83,6 +84,24 @@ async function main(): Promise<void> {
     }
   }
 
+  // Optional cross-DB spend summary (Source × Month, USD). Same failure
+  // isolation: a misconfig disables only the summary.
+  let summary: SpendSummary | null = null;
+  if (cfg.SPEND_SUMMARY_DATABASE_ID) {
+    const client = new SpendSummary(
+      cfg.NOTION_API_KEY,
+      cfg.SPEND_SUMMARY_DATABASE_ID,
+      cfg.NOTION_DATABASE_ID,
+      cfg.GAMES_DATABASE_ID ?? null,
+    );
+    try {
+      await client.verifyAccess();
+      summary = client;
+    } catch (err) {
+      await log.error(`Spend-summary DB access check failed; summary disabled: ${String(err)}`);
+    }
+  }
+
   const notifier = createNotifier(cfg, log, redact);
 
   // Optional LLM fallback: opt-in (LLM_FALLBACK) AND requires an API key.
@@ -95,7 +114,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const deps: Deps = { cfg, notion, notifier, log, llm, forwarder, games };
+  const deps: Deps = { cfg, notion, notifier, log, llm, forwarder, games, summary };
 
   // Guard against overlapping runs if a poll outlives its interval.
   let running = false;
@@ -141,6 +160,7 @@ async function main(): Promise<void> {
       (cfg.DIGEST_CRON ? `, digest: "${cfg.DIGEST_CRON}"` : "") +
       (forwarder ? ", forwarder: on" : "") +
       (games ? ", games: on" : "") +
+      (summary ? ", summary: on" : "") +
       (llm ? ", LLM fallback: on" : "") +
       (cfg.DRY_RUN ? ", DRY-RUN" : "") +
       ".",

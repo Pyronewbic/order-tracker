@@ -20,6 +20,7 @@ Gmail (receipts) ──parse──▶ merchant + amount ──history──▶ r
 - **[Subscription detection](#subscription-detection)** — flags recurring charges from receipt emails.
 - **[Forwarder tracking](#forwarder-package-tracking)** — logs packages held at ForwardMe (arrival, contents, storage countdown) into a standalone Notion DB.
 - **[Digital game tracking](#digital-game-tracking)** — logs eShop (US/JP) and Amazon JP digital game purchases into a standalone Notion DB.
+- **[Spend summary](#spend-summary)** — rolls per-month USD spend across DBs into one cross-source summary (the unified-currency total).
 
 ## How shipment tracking works
 
@@ -296,6 +297,23 @@ resolution; only exotic currencies need fallback-table entries.
 > non-US region (e.g. an Argentine eShop account) still parse — the price string is stored
 > verbatim as shown.
 
+## Spend summary
+
+Set `SPEND_SUMMARY_DATABASE_ID` to maintain a cross-database **Spend Summary** (Notion can't
+sum a number across separate DBs, so the tracker does it). Once per tick it reads the
+spend-bearing DBs, converts to USD via the shared [`money/fx`](#digital-game-tracking) resolver,
+and upserts one row per **Source × Month** (`Source` ∈ Games / Books / General) into the summary
+DB — writing only rows whose value changed.
+
+- **Games** already carry `Spend (USD)`; the summary just aggregates them by purchase month.
+- **Books** have a free-text `Price` in mixed currencies (₹/¥/$); the summary computes each
+  book's USD on the fly (currency from the symbol, date from `ETA` or row-created), **refreshes
+  the book's own `Spend (USD)`** so a manual price edit is picked up, then aggregates.
+- The **forwarder** DB is excluded (logistics, no price).
+
+This is the single source for "total spend, one currency" — chart it by source, over time, or as a
+running total. A general `Purchases` source feeds the same `General` bucket when added later.
+
 ## Multiple Gmail accounts
 
 The tracker polls any number of Gmail accounts into the **one** Notion database,
@@ -394,6 +412,7 @@ single-account fallback. Optional keys:
 - **`SUBSCRIPTION_QUERY`** — enable [subscription detection](#subscription-detection).
 - **`FORWARDER_DATABASE_ID`** / **`FORWARDER_QUERY`** — enable [forwarder tracking](#forwarder-package-tracking) (needs Insert content).
 - **`GAMES_DATABASE_ID`** / **`GAMES_QUERY`** — enable [digital game tracking](#digital-game-tracking) (needs Insert content).
+- **`SPEND_SUMMARY_DATABASE_ID`** — enable the cross-DB [spend summary](#spend-summary) (needs Insert content).
 - **Guardrails** (`DRY_RUN`, `MAX_UPDATES_PER_TICK`) — see
   [Permissions & guardrails](#permissions--guardrails).
 - **LLM fallback** (`LLM_FALLBACK`, `ANTHROPIC_API_KEY`, `LLM_MODEL`,
@@ -453,6 +472,10 @@ src/
   games/
     parser.ts         eShop / Amazon JP digital mail → game purchase/preorder
     notion.ts         standalone "Digital Games" DB client (upsert by platform+title)
+  money/
+    fx.ts             shared currency parse + cached daily USD conversion (API + fallback)
+  summary/
+    notion.ts         cross-DB Spend Summary (Source × Month USD) recompute + upsert
   telegram/
     client.ts         Telegram notifier (sendMessage); no-op / dry-run variants
     chat-id.ts        getUpdates helper (npm run telegram:chat-id)

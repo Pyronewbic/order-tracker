@@ -52,6 +52,8 @@ const envSchema = z
     FORWARDER_QUERY: z.string().default("from:automated@forwardme.com"),
     // Standalone "Digital Games" Notion DB. Unset → digital-game tracking off.
     GAMES_DATABASE_ID: z.string().min(1).optional(),
+    // Cross-DB "Spend Summary" Notion DB (Source × Month, USD). Unset → off.
+    SPEND_SUMMARY_DATABASE_ID: z.string().min(1).optional(),
     // Gmail query for digital game purchases: Amazon JP digital (order + code
     // delivery) and Nintendo eShop receipts/preorders. The eShop clause is
     // scoped to purchase/preorder subjects so sign-in/verification/NSO-renewal

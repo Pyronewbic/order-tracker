@@ -25,6 +25,7 @@ import {
 import { parseGameEmail } from "./games/parser.js";
 import { currencyFor } from "./games/fx.js";
 import { parseAmount, toUSD } from "./money/fx.js";
+import type { SpendSummary } from "./summary/notion.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
 import type { Notifier } from "./telegram/client.js";
@@ -42,6 +43,8 @@ export interface Deps {
   forwarder: ForwarderNotionClient | null;
   /** Optional digital-game tracking; null when disabled. */
   games: GamesNotionClient | null;
+  /** Optional cross-DB spend summary; null when disabled. */
+  summary: SpendSummary | null;
 }
 
 /** Mutable per-tick accumulators: shared Notion rows + cross-account counters. */
@@ -182,6 +185,16 @@ export async function runTick(
       `⚠️ Order tracker applied ${ctx.updates} updates in one tick ` +
         `(cap ${cfg.MAX_UPDATES_PER_TICK}). Check your shipping query if this is unexpected.`,
     );
+  }
+
+  // Cross-DB spend summary runs once per tick (not per account), after all rows
+  // are written. Isolated so a summary failure never affects the main poll.
+  if (deps.summary) {
+    try {
+      await deps.summary.recompute(log, cfg.DRY_RUN);
+    } catch (err) {
+      await log.error(`Spend summary failed: ${String(err)}`);
+    }
   }
 
   return { updates: ctx.updates, llmCalls: ctx.llmCalls };
