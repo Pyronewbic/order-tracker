@@ -312,10 +312,10 @@ domain DB. It parses **Amazon order-confirmation** mail (`GENERAL_QUERY`, the
   `Spend (USD)` via [`money/fx`](#digital-game-tracking).
 - **No double-counting:** orders whose items are books/games — or that fuzzy-match a curated
   book row — are **dropped** (those live in the domain DBs; the summary sources them there).
-- **Categorization** is keyword-based today (`categorize.ts`) → the unified taxonomy
-  (`Electronics/Accessories/Collectibles/Home/…/Other`); unmatched items fall to `Other`. An
-  LLM categorization layer (per the design) is the next refinement — it would reclassify much
-  of `Other`.
+- **Categorization is layered**: keyword (`categorize.ts`) first, and when that can't place an
+  order the **LLM** picks a category from the unified taxonomy (`Electronics/Accessories/
+  Collectibles/Home/…`, minus the domain-owned Books/Games). The LLM step is gap-only and shares
+  the per-tick LLM budget (`MAX_LLM_CALLS_PER_TICK`); it never runs in dry-run.
 - **Status** is set to `Ordered` on create and not yet advanced (shipment/refund wiring is a
   follow-on); the schema already uses the shipment taxonomy.
 

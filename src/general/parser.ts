@@ -1,5 +1,22 @@
 import type { ParsedMessage } from "../gmail/client.js";
 
+/**
+ * General spend categories the LLM may assign — the unified taxonomy minus the
+ * domain-owned `Books`/`Games` (those are filtered out before categorization, so
+ * the model can't reintroduce them into the general DB).
+ */
+export const GENERAL_LLM_CATEGORIES = [
+  "Electronics",
+  "Accessories",
+  "Collectibles",
+  "Software/Digital",
+  "Home",
+  "Groceries",
+  "Clothing",
+  "Subscriptions",
+  "Other",
+] as const;
+
 /** A single order parsed from an Amazon order-confirmation email. */
 export interface GeneralOrder {
   /** Amazon order number, e.g. "112-5330094-0667440". */

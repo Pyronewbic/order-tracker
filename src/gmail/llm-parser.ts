@@ -118,6 +118,39 @@ export class LlmParser {
 
     return classificationSchema.parse(extractJson(res));
   }
+
+  /**
+   * Categorize a single purchased item into exactly one of `categories` (the
+   * general spend taxonomy, already excluding domain-owned Books/Games). Returns
+   * the chosen category, or null if the model returns something off-list. One
+   * bounded call; the caller gates *when* to call it (gap-only + per-tick cap).
+   */
+  async categorizeGeneral(item: string, merchant: string, categories: string[]): Promise<string | null> {
+    const schema = {
+      type: "object",
+      additionalProperties: false,
+      properties: { category: { type: "string", enum: [...categories] } },
+      required: ["category"],
+    } as const;
+
+    const res = await this.client.messages.create({
+      model: this.model,
+      max_tokens: 40,
+      system:
+        "You categorize a purchased product into exactly one spending category. " +
+        "Pick the single best fit from the allowed list; use \"Other\" only if none clearly fit.",
+      messages: [
+        {
+          role: "user",
+          content: `Merchant: ${merchant}\nItem: ${item}\n\nAllowed categories: ${categories.join(", ")}`,
+        },
+      ],
+      output_config: { format: { type: "json_schema", schema } },
+    });
+
+    const parsed = z.object({ category: z.string() }).parse(extractJson(res));
+    return categories.includes(parsed.category) ? parsed.category : null;
+  }
 }
 
 /** Pull the JSON object out of the (structured-output) response text block. */

@@ -26,7 +26,7 @@ import { parseGameEmail } from "./games/parser.js";
 import { currencyFor } from "./games/fx.js";
 import { parseAmount, toUSD } from "./money/fx.js";
 import type { SpendSummary } from "./summary/notion.js";
-import { parseOrderEmail } from "./general/parser.js";
+import { parseOrderEmail, GENERAL_LLM_CATEGORIES } from "./general/parser.js";
 import type { GeneralNotionClient, GeneralUpdate } from "./general/notion.js";
 import { classifyItem } from "./categorize.js";
 import { parseCharge } from "./subscriptions/parser.js";
@@ -679,7 +679,26 @@ async function runGeneral(
         continue;
       }
 
-      const category = mapGeneralCategory(cats);
+      let category = mapGeneralCategory(cats);
+      // LLM gap layer: when keyword classification couldn't place the order,
+      // ask the model to pick a general category. Gated by the shared per-tick
+      // LLM budget; never in dry-run.
+      if (
+        category === "Other" &&
+        deps.llm &&
+        !cfg.DRY_RUN &&
+        ctx.llmCalls < cfg.MAX_LLM_CALLS_PER_TICK
+      ) {
+        ctx.llmCalls++;
+        try {
+          const llmCat = await deps.llm.categorizeGeneral(o.dominantItem, o.merchant, [
+            ...GENERAL_LLM_CATEGORIES,
+          ]);
+          if (llmCat) category = llmCat;
+        } catch (err) {
+          await log.warn(`[${label}] LLM categorize failed for order ${o.orderId}: ${String(err)}`);
+        }
+      }
       const usd = await toUSD(o.total, o.currency, o.dateMs);
       const label_ = o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem;
       const update: GeneralUpdate = {
