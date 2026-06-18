@@ -272,8 +272,14 @@ sign-in / verification / NSO-renewal mail from the same sender is ignored.
 prepaid-credit codes (`ニンテンドープリペイド番号`) — and recurring services (Switch
 Online membership, Game Catalog tickets). Widen/remove `EXCLUDE_TITLE` in
 `src/games/parser.ts` to include them. DB schema: **Game** (title), **Status**
-(`Preordered`/`Purchased`), **Platform** (`eShop US`/`eShop JP`/`Amazon JP`), **Date**,
-**Price**, **Device**. Needs **Insert content**. A misconfig disables only this feature.
+(`Preordered`/`Purchased`), **Platform**, **Date**, **Price**, **Device**. Needs
+**Insert content**. A misconfig disables only this feature.
+
+> **Platform carries the account's region.** eShop platforms are labelled with the
+> account country code read off each receipt — `eShop US`, `eShop AR`, `eShop JP`, etc. —
+> so a US account and a cheap-region (e.g. Argentina) account aren't conflated. This
+> matters for spend: prices stay in their own currency per platform and must not be summed
+> across regions (USD vs ARS vs JPY).
 
 > US eShop prices/titles come from English receipts; JP from Japanese. US receipts in a
 > non-US region (e.g. an Argentine eShop account) still parse — the price string is stored

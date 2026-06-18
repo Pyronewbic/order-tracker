@@ -1,7 +1,11 @@
 import type { ParsedMessage } from "../gmail/client.js";
 
-/** Where a digital game was bought. */
-export type GamePlatform = "eShop JP" | "eShop US" | "Amazon JP";
+/**
+ * Where a digital game was bought. eShop platforms carry the account's actual
+ * country code (`eShop US`, `eShop AR`, `eShop JP`, …) read from the receipt, so
+ * a US-region and an Argentina-region account aren't conflated.
+ */
+export type GamePlatform = `eShop ${string}` | "Amazon JP";
 
 /** Lifecycle of a digital purchase. `Purchased` supersedes `Preordered`. */
 export type GameStatus = "Preordered" | "Purchased";
@@ -98,8 +102,16 @@ export function parseGameEmail(msg: ParsedMessage): GameEvent | null {
   // ── Nintendo eShop (accounts.nintendo.com / ccg.nintendo.net) ─────────────
   if (from.includes("nintendo.com") || from.includes("nintendo.net")) {
     if (FUNDING_SUBJECT.test(subject)) return null; // wallet top-up, not a game
-    const jp = HAS_JP.test(subject) || HAS_JP.test(body);
-    const platform: GamePlatform = jp ? "eShop JP" : "eShop US";
+    // Region from the account country code on the receipt (e.g. "...@x.com AR").
+    // Falls back to a JP/US guess only if the line is missing.
+    const region = firstMatch(body, [
+      /(?:Associated Nintendo Account|○購入アカウント|○予約アカウント)[:：]\s*\S+@\S+\s+([A-Z]{2})\b/,
+    ]);
+    const platform: GamePlatform = region
+      ? (`eShop ${region}` as GamePlatform)
+      : HAS_JP.test(subject) || HAS_JP.test(body)
+        ? "eShop JP"
+        : "eShop US";
     const device = firstMatch(body, [/(?:○デバイスタイプ|Device Type):\s*(Nintendo Switch(?:\s*2)?)/]);
 
     // Preorder: 【予約確認】TITLE の予約を承りました  (title also in body)
