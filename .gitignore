@@ -7,3 +7,4 @@ tracker.log
 *.log
 *.tmp
 .DS_Store
+fx-cache.json

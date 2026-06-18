@@ -281,11 +281,16 @@ Online membership, Game Catalog tickets). Widen/remove `EXCLUDE_TITLE` in
 > matters for spend: prices stay in their own currency per platform and must not be summed
 > across regions (USD vs ARS vs JPY).
 
-A **`Spend (USD)`** number column unifies them: each purchase is converted to USD at its
-purchase-month rate (`src/games/fx.ts`, an editable monthly ARS/JPY table, **official**
-basis — card taxes excluded), so Notion can sum/filter/chart total spend in one currency.
-Extend the rate table with new months as needed; an unknown month falls back to the nearest
-earlier one.
+A **`Spend (USD)`** number column unifies them, so Notion can sum/filter/chart total spend in
+one currency. Conversion lives in the shared `src/money/fx.ts` resolver (currency for a game
+platform comes from `src/games/fx.ts`): per purchase **date** it goes cache → daily API rate
+([Frankfurter](https://frankfurter.dev), ECB-based, free, ~30 currencies) → a hand-maintained
+monthly **fallback table** (for currencies the API lacks, e.g. **ARS**, or if it's
+unreachable). Resolved rates are cached in `fx-cache.json` (gitignored) keyed by
+currency+date, so each day is fetched at most once and the figure is deterministic offline.
+Basis is **official** rates (card taxes excluded). This is the spot to extend for a general
+multi-currency spend tracker — the resolver already handles any ECB currency at daily
+resolution; only exotic currencies need fallback-table entries.
 
 > US eShop prices/titles come from English receipts; JP from Japanese. US receipts in a
 > non-US region (e.g. an Argentine eShop account) still parse — the price string is stored
