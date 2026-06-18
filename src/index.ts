@@ -10,6 +10,7 @@ import { NotionClient } from "./notion/client.js";
 import { ForwarderNotionClient } from "./forwarder/notion.js";
 import { GamesNotionClient } from "./games/notion.js";
 import { SpendSummary } from "./summary/notion.js";
+import { GeneralNotionClient } from "./general/notion.js";
 import { sendDigest } from "./digest.js";
 import { createNotifier } from "./telegram/client.js";
 import { runTick, type Deps } from "./pipeline.js";
@@ -84,6 +85,18 @@ async function main(): Promise<void> {
     }
   }
 
+  // Optional general-purchases tracking (Amazon order confirmations → general DB).
+  let general: GeneralNotionClient | null = null;
+  if (cfg.GENERAL_DATABASE_ID) {
+    const client = new GeneralNotionClient(cfg.NOTION_API_KEY, cfg.GENERAL_DATABASE_ID);
+    try {
+      await client.verifyAccess();
+      general = client;
+    } catch (err) {
+      await log.error(`General-purchases DB access check failed; disabled: ${String(err)}`);
+    }
+  }
+
   // Optional cross-DB spend summary (Source × Month, USD). Same failure
   // isolation: a misconfig disables only the summary.
   let summary: SpendSummary | null = null;
@@ -93,6 +106,7 @@ async function main(): Promise<void> {
       cfg.SPEND_SUMMARY_DATABASE_ID,
       cfg.NOTION_DATABASE_ID,
       cfg.GAMES_DATABASE_ID ?? null,
+      cfg.GENERAL_DATABASE_ID ?? null,
     );
     try {
       await client.verifyAccess();
@@ -114,7 +128,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const deps: Deps = { cfg, notion, notifier, log, llm, forwarder, games, summary };
+  const deps: Deps = { cfg, notion, notifier, log, llm, forwarder, games, summary, general };
 
   // Guard against overlapping runs if a poll outlives its interval.
   let running = false;
@@ -160,6 +174,7 @@ async function main(): Promise<void> {
       (cfg.DIGEST_CRON ? `, digest: "${cfg.DIGEST_CRON}"` : "") +
       (forwarder ? ", forwarder: on" : "") +
       (games ? ", games: on" : "") +
+      (general ? ", general: on" : "") +
       (summary ? ", summary: on" : "") +
       (llm ? ", LLM fallback: on" : "") +
       (cfg.DRY_RUN ? ", DRY-RUN" : "") +

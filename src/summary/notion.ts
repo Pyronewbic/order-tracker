@@ -37,6 +37,7 @@ export class SpendSummary {
     private readonly summaryDbId: string,
     private readonly booksDbId: string,
     private readonly gamesDbId: string | null,
+    private readonly generalDbId: string | null,
   ) {
     this.notion = new Client({ auth: apiKey });
   }
@@ -107,6 +108,17 @@ export class SpendSummary {
         if (typeof usd !== "number") continue;
         const dateStr: string = props.Date?.date?.start ?? (r as { created_time: string }).created_time;
         add("Games", new Date(dateStr).toISOString().slice(0, 7), usd);
+      }
+    }
+
+    // General: carry Spend(USD); accumulate by order month.
+    if (this.generalDbId) {
+      for (const r of await this.queryAll(this.generalDbId)) {
+        const props = (r as { properties: Record<string, any> }).properties;
+        const usd = props["Spend (USD)"]?.number;
+        if (typeof usd !== "number") continue;
+        const dateStr: string = props.Date?.date?.start ?? (r as { created_time: string }).created_time;
+        add("General", new Date(dateStr).toISOString().slice(0, 7), usd);
       }
     }
 

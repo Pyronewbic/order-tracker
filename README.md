@@ -20,6 +20,7 @@ Gmail (receipts) ──parse──▶ merchant + amount ──history──▶ r
 - **[Subscription detection](#subscription-detection)** — flags recurring charges from receipt emails.
 - **[Forwarder tracking](#forwarder-package-tracking)** — logs packages held at ForwardMe (arrival, contents, storage countdown) into a standalone Notion DB.
 - **[Digital game tracking](#digital-game-tracking)** — logs eShop (US/JP) and Amazon JP digital game purchases into a standalone Notion DB.
+- **[General purchases](#general-purchases)** — parses Amazon order confirmations into a general Purchases DB (everything that isn't a tracked book/game).
 - **[Spend summary](#spend-summary)** — rolls per-month USD spend across DBs into one cross-source summary (the unified-currency total).
 
 ## How shipment tracking works
@@ -297,6 +298,29 @@ resolution; only exotic currencies need fallback-table entries.
 > non-US region (e.g. an Argentine eShop account) still parse — the price string is stored
 > verbatim as shown.
 
+## General purchases
+
+Set `GENERAL_DATABASE_ID` to capture everyday purchases that don't warrant their own
+domain DB. It parses **Amazon order-confirmation** mail (`GENERAL_QUERY`, the
+`auto-confirm@amazon.{com,in,co.jp}` senders) into a general **Purchases** DB:
+
+- **One row per order, keyed by order number** (a single email can bundle several
+  `Order #` blocks — each becomes its own row). Multi-item orders: `Amount` = order total,
+  `Item` = dominant item + `(+N more)`, `Category` = shared category else `Other`.
+- **Amount/currency** come from the order's Total line (the *charged* amount — amazon.com
+  shows item prices in USD but a `Grand Total` in your card currency, e.g. INR), converted to
+  `Spend (USD)` via [`money/fx`](#digital-game-tracking).
+- **No double-counting:** orders whose items are books/games — or that fuzzy-match a curated
+  book row — are **dropped** (those live in the domain DBs; the summary sources them there).
+- **Categorization** is keyword-based today (`categorize.ts`) → the unified taxonomy
+  (`Electronics/Accessories/Collectibles/Home/…/Other`); unmatched items fall to `Other`. An
+  LLM categorization layer (per the design) is the next refinement — it would reclassify much
+  of `Other`.
+- **Status** is set to `Ordered` on create and not yet advanced (shipment/refund wiring is a
+  follow-on); the schema already uses the shipment taxonomy.
+
+Adding another merchant (Steam, Apple, …) later is a parser addition feeding the same DB.
+
 ## Spend summary
 
 Set `SPEND_SUMMARY_DATABASE_ID` to maintain a cross-database **Spend Summary** (Notion can't
@@ -412,6 +436,7 @@ single-account fallback. Optional keys:
 - **`SUBSCRIPTION_QUERY`** — enable [subscription detection](#subscription-detection).
 - **`FORWARDER_DATABASE_ID`** / **`FORWARDER_QUERY`** — enable [forwarder tracking](#forwarder-package-tracking) (needs Insert content).
 - **`GAMES_DATABASE_ID`** / **`GAMES_QUERY`** — enable [digital game tracking](#digital-game-tracking) (needs Insert content).
+- **`GENERAL_DATABASE_ID`** / **`GENERAL_QUERY`** — enable [general purchases](#general-purchases) (needs Insert content).
 - **`SPEND_SUMMARY_DATABASE_ID`** — enable the cross-DB [spend summary](#spend-summary) (needs Insert content).
 - **Guardrails** (`DRY_RUN`, `MAX_UPDATES_PER_TICK`) — see
   [Permissions & guardrails](#permissions--guardrails).
@@ -472,6 +497,9 @@ src/
   games/
     parser.ts         eShop / Amazon JP digital mail → game purchase/preorder
     notion.ts         standalone "Digital Games" DB client (upsert by platform+title)
+  general/
+    parser.ts         Amazon order-confirmation mail → per-order purchases
+    notion.ts         "Purchases (General)" DB client (upsert by order #)
   money/
     fx.ts             shared currency parse + cached daily USD conversion (API + fallback)
   summary/

@@ -26,6 +26,9 @@ import { parseGameEmail } from "./games/parser.js";
 import { currencyFor } from "./games/fx.js";
 import { parseAmount, toUSD } from "./money/fx.js";
 import type { SpendSummary } from "./summary/notion.js";
+import { parseOrderEmail } from "./general/parser.js";
+import type { GeneralNotionClient, GeneralUpdate } from "./general/notion.js";
+import { classifyItem } from "./categorize.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
 import type { Notifier } from "./telegram/client.js";
@@ -45,6 +48,8 @@ export interface Deps {
   games: GamesNotionClient | null;
   /** Optional cross-DB spend summary; null when disabled. */
   summary: SpendSummary | null;
+  /** Optional general-purchases tracking; null when disabled. */
+  general: GeneralNotionClient | null;
 }
 
 /** Mutable per-tick accumulators: shared Notion rows + cross-account counters. */
@@ -172,6 +177,11 @@ export async function runTick(
       await runGames(label, gmail, deps, state);
     } catch (err) {
       await log.error(`[${label}] games job failed: ${String(err)}`);
+    }
+    try {
+      await runGeneral(label, gmail, deps, ctx, state);
+    } catch (err) {
+      await log.error(`[${label}] general job failed: ${String(err)}`);
     }
   }
 
@@ -608,6 +618,101 @@ async function runGames(
       }
     } catch (err) {
       await log.error(`[${label}] Failed upserting game "${ev.title}": ${String(err)}`);
+    }
+  }
+}
+
+// Map the deterministic item categories to the general taxonomy. Returns the
+// shared category if all items agree, else "Other". (Book/Game are filtered out
+// by the caller — they're owned by the domain DBs.)
+function mapGeneralCategory(cats: (string | null)[]): string {
+  const MAP: Record<string, string> = {
+    Accessory: "Accessories",
+    Electronics: "Electronics",
+    Digital: "Software/Digital",
+    Other: "Other",
+  };
+  const mapped = (cats.filter(Boolean) as string[]).map((c) => MAP[c] ?? "Other");
+  const uniq = [...new Set(mapped)];
+  return uniq.length === 1 ? uniq[0]! : "Other";
+}
+
+/**
+ * General-purchases job: parse Amazon order-confirmation mail into the
+ * "Purchases (General)" DB, one row per order (keyed by order number). Orders
+ * whose items are books/games — or that fuzzy-match a curated book row — are
+ * skipped (owned by the domain DBs, so the spend summary never double-counts).
+ * Status is set to `Ordered` on create and left alone after (no shipment/refund
+ * wiring yet). No-op unless the general DB is configured.
+ */
+async function runGeneral(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  ctx: TickContext,
+  state: State,
+): Promise<void> {
+  const { cfg, log, general } = deps;
+  if (!general) return;
+
+  const watermark = accountState(state, label);
+  const messages = await fetchNewMessages(gmail, cfg.GENERAL_QUERY, watermark.generalLastMs, log, label);
+  if (messages.length === 0) {
+    await log.info(`[${label}] No new purchase messages.`);
+    return;
+  }
+  await log.info(`[${label}] Processing ${messages.length} purchase message(s).`);
+
+  const existing = await general.listOrders();
+
+  for (const msg of messages) {
+    watermark.generalLastMs = Math.max(watermark.generalLastMs, msg.internalDateMs);
+
+    for (const o of parseOrderEmail(msg)) {
+      const cats = o.itemNames.map((n) =>
+        classifyItem({ itemName: n, from: msg.from, subject: msg.subject }),
+      );
+      if (cats.some((c) => c === "Book" || c === "Game")) continue; // domain-owned
+      // Safety net against the curated books DB (catches booky items with no keyword).
+      if (o.itemNames.some((n) => matchRow(n, ctx.rows, cfg.MATCH_THRESHOLD))) {
+        await log.info(`[${label}] Order ${o.orderId} matches a tracked book; skipped.`);
+        continue;
+      }
+
+      const category = mapGeneralCategory(cats);
+      const usd = await toUSD(o.total, o.currency, o.dateMs);
+      const label_ = o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem;
+      const update: GeneralUpdate = {
+        item: label_,
+        merchant: o.merchant,
+        category,
+        amount: o.total,
+        currency: o.currency,
+        usd: usd ?? undefined,
+        dateMs: o.dateMs,
+        items: o.itemCount,
+      };
+      const exists = existing.get(o.orderId);
+
+      if (cfg.DRY_RUN) {
+        await log.info(
+          `[${label}] [dry-run] would ${exists ? "update" : "create"} order ${o.orderId} ` +
+            `(${category}, ${o.currency} ${o.total}).`,
+        );
+        continue;
+      }
+
+      try {
+        if (exists) {
+          await general.updateOrder(exists.pageId, update);
+        } else {
+          const pageId = await general.createOrder(o.orderId, { ...update, status: "Ordered" });
+          existing.set(o.orderId, { pageId, orderId: o.orderId, status: "Ordered" });
+          await log.info(`[${label}] New purchase ${o.orderId}: "${o.dominantItem.slice(0, 40)}" (${category}).`);
+        }
+      } catch (err) {
+        await log.error(`[${label}] Failed upserting order ${o.orderId}: ${String(err)}`);
+      }
     }
   }
 }

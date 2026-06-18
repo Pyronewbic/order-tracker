@@ -54,6 +54,14 @@ const envSchema = z
     GAMES_DATABASE_ID: z.string().min(1).optional(),
     // Cross-DB "Spend Summary" Notion DB (Source × Month, USD). Unset → off.
     SPEND_SUMMARY_DATABASE_ID: z.string().min(1).optional(),
+    // General "Purchases" Notion DB (non-book/game Amazon orders). Unset → off.
+    GENERAL_DATABASE_ID: z.string().min(1).optional(),
+    // Gmail query for Amazon order confirmations (same query for every account).
+    GENERAL_QUERY: z
+      .string()
+      .default(
+        "(from:auto-confirm@amazon.com OR from:auto-confirm@amazon.in OR from:auto-confirm@amazon.co.jp)",
+      ),
     // Gmail query for digital game purchases: Amazon JP digital (order + code
     // delivery) and Nintendo eShop receipts/preorders. The eShop clause is
     // scoped to purchase/preorder subjects so sign-in/verification/NSO-renewal
