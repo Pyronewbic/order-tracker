@@ -23,6 +23,7 @@ import {
   type GameUpdate,
 } from "./games/notion.js";
 import { parseGameEmail } from "./games/parser.js";
+import { currencyFor, parseAmount, toUSD } from "./games/fx.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
 import type { Notifier } from "./telegram/client.js";
@@ -561,12 +562,15 @@ async function runGames(
       continue; // don't revert a purchased game to preordered
     }
 
+    const amount = ev.price ? parseAmount(ev.price) : null;
+    const usd = amount != null ? toUSD(amount, currencyFor(ev.platform), ev.receivedMs) : null;
     const update: GameUpdate = {
       status: ev.status,
       platform: ev.platform,
       dateMs: ev.receivedMs,
       price: ev.price,
       device: ev.device,
+      usd: usd ?? undefined,
     };
 
     if (cfg.DRY_RUN) {

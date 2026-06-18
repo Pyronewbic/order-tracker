@@ -18,6 +18,8 @@ export interface GameUpdate {
   dateMs?: number;
   price?: string;
   device?: string;
+  /** Price converted to USD at the purchase-month rate (unified-currency total). */
+  usd?: number;
 }
 
 const titleProp = z
@@ -144,6 +146,7 @@ export class GamesNotionClient {
     if (update.dateMs) p.Date = { date: { start: isoDate(update.dateMs) } };
     if (update.price) p.Price = text(update.price);
     if (update.device) p.Device = text(update.device);
+    if (typeof update.usd === "number") p["Spend (USD)"] = { number: update.usd };
     return p;
   }
 }

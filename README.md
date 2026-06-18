@@ -281,6 +281,12 @@ Online membership, Game Catalog tickets). Widen/remove `EXCLUDE_TITLE` in
 > matters for spend: prices stay in their own currency per platform and must not be summed
 > across regions (USD vs ARS vs JPY).
 
+A **`Spend (USD)`** number column unifies them: each purchase is converted to USD at its
+purchase-month rate (`src/games/fx.ts`, an editable monthly ARS/JPY table, **official**
+basis — card taxes excluded), so Notion can sum/filter/chart total spend in one currency.
+Extend the rate table with new months as needed; an unknown month falls back to the nearest
+earlier one.
+
 > US eShop prices/titles come from English receipts; JP from Japanese. US receipts in a
 > non-US region (e.g. an Argentine eShop account) still parse — the price string is stored
 > verbatim as shown.
