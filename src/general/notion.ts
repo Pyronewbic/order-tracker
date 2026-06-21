@@ -106,6 +106,21 @@ export class GeneralNotionClient {
     return res.id;
   }
 
+  /**
+   * Advance an order's lifecycle Status (Shipped/Delivered/Cancelled/Returned).
+   * Unknown select options are auto-created by the REST API on first write.
+   */
+  async setStatus(pageId: string, status: string): Promise<void> {
+    await withRetry(() =>
+      this.notion.pages.update({
+        page_id: pageId,
+        properties: { Status: { select: { name: status } } } as Parameters<
+          Client["pages"]["update"]
+        >[0]["properties"],
+      }),
+    );
+  }
+
   /** Update an existing order. Status is left untouched (it may be user-advanced). */
   async updateOrder(pageId: string, u: GeneralUpdate): Promise<void> {
     const properties = this.buildProperties(u, false);

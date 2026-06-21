@@ -28,6 +28,7 @@ import { parseAmount, toUSD } from "./money/fx.js";
 import type { SpendSummary } from "./summary/notion.js";
 import { parseOrderEmail, GENERAL_LLM_CATEGORIES } from "./general/parser.js";
 import type { GeneralNotionClient, GeneralUpdate } from "./general/notion.js";
+import { parseLifecycleEmail, planGeneralUpdate } from "./general/lifecycle.js";
 import { classifyItem } from "./categorize.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
@@ -642,8 +643,8 @@ function mapGeneralCategory(cats: (string | null)[]): string {
  * "Purchases (General)" DB, one row per order (keyed by order number). Orders
  * whose items are books/games — or that fuzzy-match a curated book row — are
  * skipped (owned by the domain DBs, so the spend summary never double-counts).
- * Status is set to `Ordered` on create and left alone after (no shipment/refund
- * wiring yet). No-op unless the general DB is configured.
+ * Status is set to `Ordered` on create; a second pass ({@link runGeneralLifecycle})
+ * then advances it from post-order mail. No-op unless the general DB is configured.
  */
 async function runGeneral(
   label: string,
@@ -732,6 +733,79 @@ async function runGeneral(
       } catch (err) {
         await log.error(`[${label}] Failed upserting order ${o.orderId}: ${String(err)}`);
       }
+    }
+  }
+
+  // Second pass: advance the lifecycle (Shipped/Delivered/Cancelled/Returned)
+  // of orders already in the DB, reusing the `existing` map so an order created
+  // this tick can also advance this tick.
+  await runGeneralLifecycle(label, gmail, deps, existing, state);
+}
+
+/**
+ * Lifecycle pass for general orders: read post-order Amazon mail (shipment /
+ * delivery / cancellation / refund), match by order number, and advance the
+ * row's Status along `Ordered → Shipped → Delivered` (monotonic) or to a
+ * terminal `Cancelled`/`Returned` (which the spend summary then excludes, so a
+ * refunded order net-zeros). Lifecycle mail whose order isn't in the general DB
+ * (e.g. a book/game order, owned by its domain DB) is ignored.
+ */
+async function runGeneralLifecycle(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  existing: Map<string, { pageId: string; orderId: string; status: string }>,
+  state: State,
+): Promise<void> {
+  const { cfg, log, general } = deps;
+  if (!general) return;
+
+  const watermark = accountState(state, label);
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.GENERAL_LIFECYCLE_QUERY,
+    watermark.generalLifecycleLastMs,
+    log,
+    label,
+  );
+  if (messages.length === 0) {
+    await log.info(`[${label}] No new order-lifecycle messages.`);
+    return;
+  }
+  await log.info(`[${label}] Processing ${messages.length} order-lifecycle message(s).`);
+
+  for (const msg of messages) {
+    watermark.generalLifecycleLastMs = Math.max(
+      watermark.generalLifecycleLastMs,
+      msg.internalDateMs,
+    );
+
+    const ev = parseLifecycleEmail(msg);
+    if (!ev) continue;
+
+    const row = existing.get(ev.orderId);
+    if (!row) continue; // not a general order (book/game, or never confirmed)
+
+    const decision = planGeneralUpdate(row.status, ev.status);
+    if (decision === "noop") continue;
+    if (decision === "regress") {
+      await log.info(
+        `[${label}] Order ${ev.orderId}: ${row.status || "(unset)"} ✗→ ${ev.status} (skipped).`,
+      );
+      continue;
+    }
+
+    if (cfg.DRY_RUN) {
+      await log.info(`[${label}] [dry-run] would set order ${ev.orderId} → ${ev.status}.`);
+      continue;
+    }
+
+    try {
+      await general.setStatus(row.pageId, ev.status);
+      row.status = ev.status; // keep the map current for later mail this tick
+      await log.info(`[${label}] Order ${ev.orderId} → ${ev.status}.`);
+    } catch (err) {
+      await log.error(`[${label}] Failed advancing order ${ev.orderId}: ${String(err)}`);
     }
   }
 }

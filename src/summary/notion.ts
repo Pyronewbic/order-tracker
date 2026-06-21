@@ -1,6 +1,7 @@
 import { Client } from "@notionhq/client";
 import { withRetry } from "../retry.js";
 import { parseAmount, toUSD, type Currency } from "../money/fx.js";
+import { isTerminalGeneralStatus } from "../general/lifecycle.js";
 import type { Logger } from "../logger.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -111,10 +112,13 @@ export class SpendSummary {
       }
     }
 
-    // General: carry Spend(USD); accumulate by order month.
+    // General: carry Spend(USD); accumulate by order month. Cancelled/Returned
+    // orders are excluded so a refunded purchase net-zeros (its row keeps the
+    // original USD for reference; the summary just doesn't count it).
     if (this.generalDbId) {
       for (const r of await this.queryAll(this.generalDbId)) {
         const props = (r as { properties: Record<string, any> }).properties;
+        if (isTerminalGeneralStatus(props.Status?.select?.name ?? "")) continue;
         const usd = props["Spend (USD)"]?.number;
         if (typeof usd !== "number") continue;
         const dateStr: string = props.Date?.date?.start ?? (r as { created_time: string }).created_time;
@@ -160,6 +164,27 @@ export class SpendSummary {
       }
     }
 
-    await log.info(`[summary] ${writes} bucket(s) ${dryRun ? "would change" : "updated"}.`);
+    // Archive buckets that no longer have any qualifying spend (e.g. every one
+    // of a month's general orders was refunded). The summary is fully derived
+    // each run, so archiving loses nothing — a fresh row is created if spend
+    // returns. Scoped to sources scanned this run, so disabling a source DB
+    // doesn't wipe its historical buckets.
+    const activeSources = new Set(["Books"]);
+    if (this.gamesDbId) activeSources.add("Games");
+    if (this.generalDbId) activeSources.add("General");
+    let archived = 0;
+    for (const [k, ex] of existing) {
+      if (buckets.has(k)) continue;
+      if (!activeSources.has(k.split("|")[0]!)) continue;
+      archived += 1;
+      if (dryRun) continue;
+      await withRetry(() => this.notion.pages.update({ page_id: ex.pageId, archived: true }));
+    }
+
+    await log.info(
+      `[summary] ${writes} bucket(s) ${dryRun ? "would change" : "updated"}` +
+        (archived ? `, ${archived} emptied bucket(s) ${dryRun ? "would be" : ""} archived` : "") +
+        ".",
+    );
   }
 }

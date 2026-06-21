@@ -316,8 +316,12 @@ domain DB. It parses **Amazon order-confirmation** mail (`GENERAL_QUERY`, the
   order the **LLM** picks a category from the unified taxonomy (`Electronics/Accessories/
   Collectibles/Home/…`, minus the domain-owned Books/Games). The LLM step is gap-only and shares
   the per-tick LLM budget (`MAX_LLM_CALLS_PER_TICK`); it never runs in dry-run.
-- **Status** is set to `Ordered` on create and not yet advanced (shipment/refund wiring is a
-  follow-on); the schema already uses the shipment taxonomy.
+- **Lifecycle:** `Status` is `Ordered` on create, then a second pass (`GENERAL_LIFECYCLE_QUERY`,
+  the `shipment-tracking@` / `order-update@` / `return@` senders) advances it by **order number**
+  along **Ordered → Shipped → Delivered** (monotonic — a stale earlier email can't pull it back).
+  `Cancelled` / `Returned` are terminal and **net-zero the spend**: the row keeps its original
+  `Spend (USD)` for reference, but the summary excludes terminal rows (and archives a bucket that
+  empties out entirely). Lifecycle mail whose order isn't in this DB (a book/game order) is ignored.
 
 Adding another merchant (Steam, Apple, …) later is a parser addition feeding the same DB.
 
@@ -333,10 +337,13 @@ DB — writing only rows whose value changed.
 - **Books** have a free-text `Price` in mixed currencies (₹/¥/$); the summary computes each
   book's USD on the fly (currency from the symbol, date from `ETA` or row-created), **refreshes
   the book's own `Spend (USD)`** so a manual price edit is picked up, then aggregates.
+- **General** purchases carry `Spend (USD)`; the summary aggregates them by order month but
+  **excludes `Cancelled` / `Returned`** orders, so a refunded purchase net-zeros.
 - The **forwarder** DB is excluded (logistics, no price).
 
-This is the single source for "total spend, one currency" — chart it by source, over time, or as a
-running total. A general `Purchases` source feeds the same `General` bucket when added later.
+A bucket whose rows all drop out (e.g. every general order in a month was refunded) is archived,
+so the totals stay honest. This is the single source for "total spend, one currency" — chart it by
+source, over time, or as a running total.
 
 ## Multiple Gmail accounts
 
@@ -499,6 +506,7 @@ src/
     notion.ts         standalone "Digital Games" DB client (upsert by platform+title)
   general/
     parser.ts         Amazon order-confirmation mail → per-order purchases
+    lifecycle.ts      post-order mail → Status advance (Shipped/Delivered/Cancelled/Returned)
     notion.ts         "Purchases (General)" DB client (upsert by order #)
   money/
     fx.ts             shared currency parse + cached daily USD conversion (API + fallback)

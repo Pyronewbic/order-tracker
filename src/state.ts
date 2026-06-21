@@ -24,6 +24,8 @@ const accountWatermarkSchema = z.object({
   gamesLastMs: z.number().int().nonnegative().default(0),
   /** Epoch ms of the newest general-purchase email processed. */
   generalLastMs: z.number().int().nonnegative().default(0),
+  /** Epoch ms of the newest general-order lifecycle email processed. */
+  generalLifecycleLastMs: z.number().int().nonnegative().default(0),
 });
 
 // Every field defaults, and the legacy top-level timestamps are folded into the
@@ -54,6 +56,7 @@ const stateSchema = z
         forwarderLastMs: 0,
         gamesLastMs: 0,
         generalLastMs: 0,
+        generalLifecycleLastMs: 0,
       };
     }
     return { accounts, links: s.links, subscriptions: s.subscriptions };
@@ -81,6 +84,7 @@ export function accountState(state: State, label: string): AccountWatermark {
       forwarderLastMs: 0,
       gamesLastMs: 0,
       generalLastMs: 0,
+      generalLifecycleLastMs: 0,
     };
     state.accounts[label] = rec;
   }

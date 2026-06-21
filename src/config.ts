@@ -62,6 +62,17 @@ const envSchema = z
       .default(
         "(from:auto-confirm@amazon.com OR from:auto-confirm@amazon.in OR from:auto-confirm@amazon.co.jp)",
       ),
+    // Gmail query for post-order lifecycle mail (shipment/delivery/cancel/refund)
+    // that advances a general order's Status by its order number. Excludes
+    // auto-confirm@ (order creation — handled by GENERAL_QUERY). Same query for
+    // every account; only used when GENERAL_DATABASE_ID is set.
+    GENERAL_LIFECYCLE_QUERY: z
+      .string()
+      .default(
+        "(from:shipment-tracking@amazon.com OR from:order-update@amazon.com OR from:return@amazon.com OR " +
+          "from:shipment-tracking@amazon.in OR from:order-update@amazon.in OR from:return@amazon.in OR " +
+          "from:shipment-tracking@amazon.co.jp OR from:order-update@amazon.co.jp OR from:return@amazon.co.jp)",
+      ),
     // Gmail query for digital game purchases: Amazon JP digital (order + code
     // delivery) and Nintendo eShop receipts/preorders. The eShop clause is
     // scoped to purchase/preorder subjects so sign-in/verification/NSO-renewal
