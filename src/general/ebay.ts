@@ -24,6 +24,25 @@ function titleFromSubject(subject: string): string {
 }
 
 /**
+ * Recover the full item title from the body by anchoring on the subject's
+ * (truncated) title as a literal prefix, then reading up to the price/quantity/
+ * Item-ID that follows the item line. Returns null when the prefix isn't found
+ * (caller falls back to the subject). Anchoring avoids the boilerplate that a
+ * fixed "order has shipped. … Price:" pattern grabs for Open-Box listings.
+ */
+function fullTitleFromBody(body: string, subjectTitle: string): string | null {
+  if (subjectTitle.length < 8) return null; // too short to anchor reliably
+  const idx = body.indexOf(subjectTitle);
+  if (idx < 0) return null;
+  const after = body.slice(idx);
+  const m = after.match(/^(.+?)\s*(?:Price:|Item ID:|Qty\b|Quantity\b)/i);
+  const title = (m?.[1] ?? subjectTitle).trim().slice(0, 160);
+  // Reject a match that ran into eBay boilerplate (no real title contains these).
+  if (/Money Back Guarantee|Open Box item|eBay sent this/i.test(title)) return null;
+  return title || null;
+}
+
+/**
  * Parse an eBay "Order confirmed" email into a {@link GeneralOrder}, or null if
  * it isn't a parseable confirmation. The order number lives in the body; the
  * charged total is the amount after "Total charged to" (grand total incl.
@@ -48,7 +67,13 @@ export function parseEbayOrder(msg: ParsedMessage): GeneralOrder | null {
   const total = totalStr ? parseAmount(totalStr) : null;
   if (total == null) return null;
 
-  const title = titleFromSubject(msg.subject) || orderId;
+  // The subject truncates the item ("…Team Ro…"). The body holds the full title,
+  // but its position varies by listing type (a plain "order has shipped. <title>
+  // Price:" anchor grabs boilerplate for Open-Box/guarantee listings). Anchor
+  // instead on the subject's (truncated) title as a literal prefix, then read to
+  // the price/Item-ID that follows the item line — falling back to the subject.
+  const subjectTitle = titleFromSubject(msg.subject);
+  const title = fullTitleFromBody(body, subjectTitle) || subjectTitle || orderId;
   return {
     orderId,
     merchant: "eBay",

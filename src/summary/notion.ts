@@ -17,6 +17,18 @@ function bookCurrency(price: string, source: string): Currency {
   return "USD";
 }
 
+/**
+ * Map a general-purchase merchant to its Spend Summary `Source` bucket. The
+ * three Amazon regions collapse to one "Amazon" bucket (region detail lives in
+ * the Purchases DB); eBay is its own bucket so slab spend is separable. Anything
+ * unmapped falls back to "General".
+ */
+function generalSource(merchant: string): string {
+  if (merchant === "eBay") return "eBay";
+  if (merchant.startsWith("Amazon")) return "Amazon";
+  return "General";
+}
+
 interface Bucket {
   usd: number;
   items: number;
@@ -112,9 +124,10 @@ export class SpendSummary {
       }
     }
 
-    // General: carry Spend(USD); accumulate by order month. Cancelled/Returned
-    // orders are excluded so a refunded purchase net-zeros (its row keeps the
-    // original USD for reference; the summary just doesn't count it).
+    // General: carry Spend(USD); accumulate by order month, bucketed by merchant
+    // (Amazon vs eBay) so slab spend is separable. Cancelled/Returned orders are
+    // excluded so a refunded purchase net-zeros (its row keeps the original USD
+    // for reference; the summary just doesn't count it).
     if (this.generalDbId) {
       for (const r of await this.queryAll(this.generalDbId)) {
         const props = (r as { properties: Record<string, any> }).properties;
@@ -122,7 +135,8 @@ export class SpendSummary {
         const usd = props["Spend (USD)"]?.number;
         if (typeof usd !== "number") continue;
         const dateStr: string = props.Date?.date?.start ?? (r as { created_time: string }).created_time;
-        add("General", new Date(dateStr).toISOString().slice(0, 7), usd);
+        const source = generalSource(props.Merchant?.select?.name ?? "");
+        add(source, new Date(dateStr).toISOString().slice(0, 7), usd);
       }
     }
 
@@ -171,7 +185,11 @@ export class SpendSummary {
     // doesn't wipe its historical buckets.
     const activeSources = new Set(["Books"]);
     if (this.gamesDbId) activeSources.add("Games");
-    if (this.generalDbId) activeSources.add("General");
+    if (this.generalDbId) {
+      activeSources.add("Amazon");
+      activeSources.add("eBay");
+      activeSources.add("General"); // legacy bucket; kept so old "General" rows get archived
+    }
     let archived = 0;
     for (const [k, ex] of existing) {
       if (buckets.has(k)) continue;

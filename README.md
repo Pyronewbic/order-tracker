@@ -334,7 +334,9 @@ use a different id but always arrive with a matchable refund, so the cancel mail
 items are still keyword/LLM-categorized (Game Boy mod gear → Electronics, binders → Accessories),
 defaulting to Collectibles. **Totals:** eBay's `Total in USD` line is preferred — for a non-USD card
 charge eBay also prints a `Total charged to … $Y` where `$Y` is the *local* amount (e.g. INR rendered
-with a `$`), which must not be read as USD.
+with a `$`), which must not be read as USD. **Item names:** the subject truncates the title, so the
+full name is recovered from the body by anchoring on the subject's prefix and reading to the price
+line (a fixed pattern grabs boilerplate on Open-Box listings).
 
 Adding another merchant (Steam, Apple, …) later is a parser addition feeding the same DB.
 
@@ -343,15 +345,17 @@ Adding another merchant (Steam, Apple, …) later is a parser addition feeding t
 Set `SPEND_SUMMARY_DATABASE_ID` to maintain a cross-database **Spend Summary** (Notion can't
 sum a number across separate DBs, so the tracker does it). Once per tick it reads the
 spend-bearing DBs, converts to USD via the shared [`money/fx`](#digital-game-tracking) resolver,
-and upserts one row per **Source × Month** (`Source` ∈ Games / Books / General) into the summary
-DB — writing only rows whose value changed.
+and upserts one row per **Source × Month** (`Source` ∈ Games / Books / Amazon / eBay) into the
+summary DB — writing only rows whose value changed.
 
 - **Games** already carry `Spend (USD)`; the summary just aggregates them by purchase month.
 - **Books** have a free-text `Price` in mixed currencies (₹/¥/$); the summary computes each
   book's USD on the fly (currency from the symbol, date from `ETA` or row-created), **refreshes
   the book's own `Spend (USD)`** so a manual price edit is picked up, then aggregates.
-- **General** purchases carry `Spend (USD)`; the summary aggregates them by order month but
-  **excludes `Cancelled` / `Returned`** orders, so a refunded purchase net-zeros.
+- **General** purchases carry `Spend (USD)`; the summary aggregates them by order month, **bucketed
+  by merchant** — the three Amazon regions collapse to one `Amazon` source, eBay is its own `eBay`
+  source (so slab spend is separable) — and **excludes `Cancelled` / `Returned`** orders, so a
+  refunded purchase net-zeros.
 - The **forwarder** DB is excluded (logistics, no price).
 
 A bucket whose rows all drop out (e.g. every general order in a month was refunded) is archived,
