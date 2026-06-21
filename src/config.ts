@@ -73,6 +73,15 @@ const envSchema = z
           "from:shipment-tracking@amazon.in OR from:order-update@amazon.in OR from:return@amazon.in OR " +
           "from:shipment-tracking@amazon.co.jp OR from:order-update@amazon.co.jp OR from:return@amazon.co.jp)",
       ),
+    // Gmail query for eBay order mail (confirmations + shipment/delivery/refund),
+    // feeding the same general DB as Collectibles. Subject-scoped to order events
+    // so bids/offers/feedback/marketing are excluded. Only used when
+    // GENERAL_DATABASE_ID is set.
+    EBAY_QUERY: z
+      .string()
+      .default(
+        "from:ebay.com subject:(confirmed OR carrier OR delivered OR delivery OR refund)",
+      ),
     // Gmail query for digital game purchases: Amazon JP digital (order + code
     // delivery) and Nintendo eShop receipts/preorders. The eShop clause is
     // scoped to purchase/preorder subjects so sign-in/verification/NSO-renewal

@@ -323,6 +323,19 @@ domain DB. It parses **Amazon order-confirmation** mail (`GENERAL_QUERY`, the
   `Spend (USD)` for reference, but the summary excludes terminal rows (and archives a bucket that
   empties out entirely). Lifecycle mail whose order isn't in this DB (a book/game order) is ignored.
 
+### eBay
+
+`EBAY_QUERY` folds eBay into the same DB (default category **Collectibles**), since eBay buys here
+are mostly Pokémon slabs — and **portfolio value lives in [Collectr](https://getcollectr.com), not
+here**, so this tracks spend only (no grade/cert/value parsing). One query carries both
+confirmations and post-order mail (eBay's order # — `NN-NNNNN-NNNNN` — appears in shipment/delivery/
+refund bodies, so matching mirrors Amazon). A **refund** maps to `Returned` (net-zero); cancellations
+use a different id but always arrive with a matchable refund, so the cancel mail is ignored. eBay
+items are still keyword/LLM-categorized (Game Boy mod gear → Electronics, binders → Accessories),
+defaulting to Collectibles. **Totals:** eBay's `Total in USD` line is preferred — for a non-USD card
+charge eBay also prints a `Total charged to … $Y` where `$Y` is the *local* amount (e.g. INR rendered
+with a `$`), which must not be read as USD.
+
 Adding another merchant (Steam, Apple, …) later is a parser addition feeding the same DB.
 
 ## Spend summary
@@ -507,6 +520,7 @@ src/
   general/
     parser.ts         Amazon order-confirmation mail → per-order purchases
     lifecycle.ts      post-order mail → Status advance (Shipped/Delivered/Cancelled/Returned)
+    ebay.ts           eBay order + post-order mail → purchases (Collectibles, spend-only)
     notion.ts         "Purchases (General)" DB client (upsert by order #)
   money/
     fx.ts             shared currency parse + cached daily USD conversion (API + fallback)

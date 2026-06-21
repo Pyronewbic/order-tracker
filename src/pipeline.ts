@@ -29,6 +29,7 @@ import type { SpendSummary } from "./summary/notion.js";
 import { parseOrderEmail, GENERAL_LLM_CATEGORIES } from "./general/parser.js";
 import type { GeneralNotionClient, GeneralUpdate } from "./general/notion.js";
 import { parseLifecycleEmail, planGeneralUpdate } from "./general/lifecycle.js";
+import { parseEbayOrder, parseEbayLifecycle } from "./general/ebay.js";
 import { classifyItem } from "./categorize.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
@@ -639,18 +640,79 @@ function mapGeneralCategory(cats: (string | null)[]): string {
 }
 
 /**
- * General-purchases job: parse Amazon order-confirmation mail into the
- * "Purchases (General)" DB, one row per order (keyed by order number). Orders
- * whose items are books/games — or that fuzzy-match a curated book row — are
- * skipped (owned by the domain DBs, so the spend summary never double-counts).
- * Status is set to `Ordered` on create; a second pass ({@link runGeneralLifecycle})
- * then advances it from post-order mail. No-op unless the general DB is configured.
+ * Resolve a general-order category: deterministic keyword mapping first, then the
+ * LLM gap layer when that can't place it (bounded by the shared per-tick LLM
+ * budget; never in dry-run), then `fallback` if still unplaced. Amazon passes
+ * "Other"; eBay passes "Collectibles" (the right prior for this user's uncategorized
+ * eBay buys). Backfill orders the LLM couldn't reach get the fallback and are
+ * refined by a one-shot re-categorization.
+ */
+async function categorizeOrder(
+  cats: (string | null)[],
+  dominantItem: string,
+  merchant: string,
+  fallback: string,
+  deps: Deps,
+  ctx: TickContext,
+): Promise<string> {
+  let category = mapGeneralCategory(cats);
+  if (
+    category === "Other" &&
+    deps.llm &&
+    !deps.cfg.DRY_RUN &&
+    ctx.llmCalls < deps.cfg.MAX_LLM_CALLS_PER_TICK
+  ) {
+    ctx.llmCalls++;
+    try {
+      const llmCat = await deps.llm.categorizeGeneral(dominantItem, merchant, [...GENERAL_LLM_CATEGORIES]);
+      if (llmCat) category = llmCat;
+    } catch (err) {
+      await deps.log.warn(`LLM categorize failed for "${dominantItem.slice(0, 40)}": ${String(err)}`);
+    }
+  }
+  return category === "Other" ? fallback : category;
+}
+
+/**
+ * General-purchases job: maintains the "Purchases (General)" DB via three
+ * independent passes over the shared order map (loaded once) — Amazon
+ * confirmations ({@link runGeneralConfirmations}), Amazon post-order lifecycle
+ * ({@link runGeneralLifecycle}), and eBay confirmations + lifecycle
+ * ({@link runEbay}). Each pass has its own query + watermark and its own "no new
+ * mail" guard, so an idle Amazon inbox never blocks the lifecycle or eBay work.
+ * No-op unless the general DB is configured.
  */
 async function runGeneral(
   label: string,
   gmail: GmailClient,
   deps: Deps,
   ctx: TickContext,
+  state: State,
+): Promise<void> {
+  const { general } = deps;
+  if (!general) return;
+
+  // Load the order map once and share it across all three passes — each runs
+  // independently (its own query + watermark), and a confirmation created in an
+  // earlier pass is visible to the lifecycle/eBay passes within the same tick.
+  const existing = await general.listOrders();
+  await runGeneralConfirmations(label, gmail, deps, ctx, existing, state);
+  await runGeneralLifecycle(label, gmail, deps, existing, state);
+  await runEbay(label, gmail, deps, ctx, existing, state);
+}
+
+/**
+ * Amazon order-confirmation pass: parse `GENERAL_QUERY` mail into new general
+ * rows (Status `Ordered`). Book/game orders — and fuzzy matches against the
+ * curated book DB — are skipped (owned by the domain DBs). Its "no new mail"
+ * early-return is local, so it never blocks the lifecycle/eBay passes.
+ */
+async function runGeneralConfirmations(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  ctx: TickContext,
+  existing: Map<string, { pageId: string; orderId: string; status: string }>,
   state: State,
 ): Promise<void> {
   const { cfg, log, general } = deps;
@@ -663,8 +725,6 @@ async function runGeneral(
     return;
   }
   await log.info(`[${label}] Processing ${messages.length} purchase message(s).`);
-
-  const existing = await general.listOrders();
 
   for (const msg of messages) {
     watermark.generalLastMs = Math.max(watermark.generalLastMs, msg.internalDateMs);
@@ -680,26 +740,7 @@ async function runGeneral(
         continue;
       }
 
-      let category = mapGeneralCategory(cats);
-      // LLM gap layer: when keyword classification couldn't place the order,
-      // ask the model to pick a general category. Gated by the shared per-tick
-      // LLM budget; never in dry-run.
-      if (
-        category === "Other" &&
-        deps.llm &&
-        !cfg.DRY_RUN &&
-        ctx.llmCalls < cfg.MAX_LLM_CALLS_PER_TICK
-      ) {
-        ctx.llmCalls++;
-        try {
-          const llmCat = await deps.llm.categorizeGeneral(o.dominantItem, o.merchant, [
-            ...GENERAL_LLM_CATEGORIES,
-          ]);
-          if (llmCat) category = llmCat;
-        } catch (err) {
-          await log.warn(`[${label}] LLM categorize failed for order ${o.orderId}: ${String(err)}`);
-        }
-      }
+      const category = await categorizeOrder(cats, o.dominantItem, o.merchant, "Other", deps, ctx);
       const usd = await toUSD(o.total, o.currency, o.dateMs);
       const label_ = o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem;
       const update: GeneralUpdate = {
@@ -735,11 +776,97 @@ async function runGeneral(
       }
     }
   }
+}
 
-  // Second pass: advance the lifecycle (Shipped/Delivered/Cancelled/Returned)
-  // of orders already in the DB, reusing the `existing` map so an order created
-  // this tick can also advance this tick.
-  await runGeneralLifecycle(label, gmail, deps, existing, state);
+/**
+ * eBay pass for general orders: a single query (`EBAY_QUERY`) carries both
+ * confirmations and post-order mail. Confirmations create a `Collectibles` row
+ * (keyed by eBay's order number); shipment/delivery/refund mail advances it via
+ * the shared {@link planGeneralUpdate} ladder (refund → Returned, net-zeroed by
+ * the summary). eBay buys are collectibles the user values in a separate app, so
+ * this captures spend only — no grade/cert parsing. Processed oldest-first, so a
+ * confirmation creates the row before later mail advances it.
+ */
+async function runEbay(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  ctx: TickContext,
+  existing: Map<string, { pageId: string; orderId: string; status: string }>,
+  state: State,
+): Promise<void> {
+  const { cfg, log, general } = deps;
+  if (!general) return;
+
+  const watermark = accountState(state, label);
+  const messages = await fetchNewMessages(gmail, cfg.EBAY_QUERY, watermark.ebayLastMs, log, label);
+  if (messages.length === 0) {
+    await log.info(`[${label}] No new eBay messages.`);
+    return;
+  }
+  await log.info(`[${label}] Processing ${messages.length} eBay message(s).`);
+
+  for (const msg of messages) {
+    watermark.ebayLastMs = Math.max(watermark.ebayLastMs, msg.internalDateMs);
+
+    // Confirmation → create the order row (idempotent; an existing row is left
+    // as-is so a later lifecycle advance isn't clobbered back to Ordered).
+    const order = parseEbayOrder(msg);
+    if (order) {
+      if (existing.has(order.orderId)) continue;
+      if (cfg.DRY_RUN) {
+        await log.info(`[${label}] [dry-run] would create eBay order ${order.orderId}.`);
+        continue;
+      }
+      try {
+        const cats = order.itemNames.map((n) =>
+          classifyItem({ itemName: n, from: msg.from, subject: msg.subject }),
+        );
+        const category = await categorizeOrder(cats, order.dominantItem, "eBay", "Collectibles", deps, ctx);
+        const usd = await toUSD(order.total, order.currency, order.dateMs);
+        const pageId = await general.createOrder(order.orderId, {
+          item: order.dominantItem,
+          merchant: "eBay",
+          category,
+          amount: order.total,
+          currency: order.currency,
+          usd: usd ?? undefined,
+          dateMs: order.dateMs,
+          items: order.itemCount,
+          status: "Ordered",
+        });
+        existing.set(order.orderId, { pageId, orderId: order.orderId, status: "Ordered" });
+        await log.info(`[${label}] New eBay order ${order.orderId}: "${order.dominantItem.slice(0, 40)}".`);
+      } catch (err) {
+        await log.error(`[${label}] Failed creating eBay order ${order.orderId}: ${String(err)}`);
+      }
+      continue;
+    }
+
+    // Lifecycle → advance an existing order (unknown orders are ignored).
+    const ev = parseEbayLifecycle(msg);
+    if (!ev) continue;
+    const row = existing.get(ev.orderId);
+    if (!row) continue;
+
+    const decision = planGeneralUpdate(row.status, ev.status);
+    if (decision === "noop") continue;
+    if (decision === "regress") {
+      await log.info(`[${label}] eBay order ${ev.orderId}: ${row.status || "(unset)"} ✗→ ${ev.status} (skipped).`);
+      continue;
+    }
+    if (cfg.DRY_RUN) {
+      await log.info(`[${label}] [dry-run] would set eBay order ${ev.orderId} → ${ev.status}.`);
+      continue;
+    }
+    try {
+      await general.setStatus(row.pageId, ev.status);
+      row.status = ev.status;
+      await log.info(`[${label}] eBay order ${ev.orderId} → ${ev.status}.`);
+    } catch (err) {
+      await log.error(`[${label}] Failed advancing eBay order ${ev.orderId}: ${String(err)}`);
+    }
+  }
 }
 
 /**
