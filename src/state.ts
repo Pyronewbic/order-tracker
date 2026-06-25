@@ -41,6 +41,9 @@ const stateSchema = z
     accounts: z.record(z.string(), accountWatermarkSchema).default({}),
     /** tracking number → linked Notion row (global; cross-account dedup). */
     links: z.record(z.string(), linkSchema).default({}),
+    /** Amazon order number → linked Notion row, so a later title-less update
+     * (e.g. Amazon IN "Delivered: … | Order # …") resolves to the same row. */
+    orderLinks: z.record(z.string(), linkSchema).default({}),
     /** merchant key → charge history (global). */
     subscriptions: z.record(z.string(), subscriptionSchema).default({}),
   })
@@ -62,7 +65,7 @@ const stateSchema = z
         ebayLastMs: 0,
       };
     }
-    return { accounts, links: s.links, subscriptions: s.subscriptions };
+    return { accounts, links: s.links, orderLinks: s.orderLinks, subscriptions: s.subscriptions };
   });
 
 export type State = z.infer<typeof stateSchema>;
@@ -70,7 +73,7 @@ export type AccountWatermark = z.infer<typeof accountWatermarkSchema>;
 export type SubscriptionRecord = z.infer<typeof subscriptionSchema>;
 
 function empty(): State {
-  return { accounts: {}, links: {}, subscriptions: {} };
+  return { accounts: {}, links: {}, orderLinks: {}, subscriptions: {} };
 }
 
 /**

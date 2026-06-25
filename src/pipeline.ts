@@ -292,9 +292,10 @@ async function runShipping(
 
 /**
  * Resolve a {@link ShipmentUpdate} to a Notion row. Primary: fuzzy-match the
- * item name and, on success, record this update's tracking numbers so later
- * carrier-only emails (from any account) resolve to the same row. Fallback:
- * resolve via a previously-recorded tracking link.
+ * item name and, on success, record this update's tracking numbers AND order
+ * number so later title-less emails (a carrier update, or Amazon IN's
+ * "Delivered: 1 item | Order # …") resolve to the same row. Fallback: resolve
+ * via a previously-recorded tracking-number or order-number link.
  */
 function resolveRow(
   label: string,
@@ -309,9 +310,9 @@ function resolveRow(
     const match = matchRow(update.itemName, ctx.rows, threshold);
     if (match) {
       row = match.row;
-      for (const tn of update.trackingNumbers) {
-        state.links[tn] = { pageId: row.pageId, book: row.book };
-      }
+      const link = { pageId: row.pageId, book: row.book };
+      for (const tn of update.trackingNumbers) state.links[tn] = link;
+      if (update.orderId) state.orderLinks[update.orderId] = link;
     }
   }
 
@@ -323,6 +324,13 @@ function resolveRow(
         if (row) break;
       }
     }
+  }
+
+  // Last resort: a title-less update (e.g. Amazon IN "Delivered … Order # …")
+  // resolves via the order-number link a prior titled email established.
+  if (!row && update.orderId) {
+    const link = state.orderLinks[update.orderId];
+    if (link) row = ctx.rowsById.get(link.pageId);
   }
 
   return row;

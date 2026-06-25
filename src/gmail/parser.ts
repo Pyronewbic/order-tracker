@@ -10,6 +10,9 @@ export interface ShipmentUpdate {
   itemName: string;
   /** Tracking numbers found in the email, used to link carrier updates. */
   trackingNumbers: string[];
+  /** Amazon order number (NNN-NNNNNNN-NNNNNNN), if present. Links title-less
+   * updates (e.g. Amazon IN "Delivered: 1 item | Order # …") back to a row. */
+  orderId?: string;
   /** Carrier name ("Amazon", "UPS", …) or "Unknown". */
   carrier: string;
   /** Item-type category, or null when it can't be determined confidently. */
@@ -130,6 +133,16 @@ export function extractItemName(subject: string): string {
   return "";
 }
 
+const ORDER_NUMBER_RE = /\b\d{3}-\d{7}-\d{7}\b/;
+
+/** Amazon order number from the subject (preferred) or body, if present. */
+function extractOrderId(msg: ParsedMessage): string | undefined {
+  return (
+    msg.subject.match(ORDER_NUMBER_RE)?.[0] ??
+    (msg.body || msg.snippet).match(ORDER_NUMBER_RE)?.[0]
+  );
+}
+
 /** Trim Amazon noise like "and 2 more items" and surrounding punctuation. */
 function cleanItemName(raw: string): string {
   return raw
@@ -159,6 +172,7 @@ export function buildUpdate(
     status,
     itemName,
     trackingNumbers: extractTrackingNumbers(haystack, carrier),
+    orderId: extractOrderId(msg),
     carrier: carrier?.name ?? "Unknown",
     category: classifyItem(signal),
     tags: tagsFor(signal),
