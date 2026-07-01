@@ -1,4 +1,4 @@
-// PM2 process definition for the Mac mini.
+// PM2 process definition.
 //
 // This package is ESM ("type": "module"), and PM2 loads its ecosystem file via
 // CommonJS `require`, so this file is intentionally `.cjs`.
@@ -9,13 +9,14 @@
 //   pm2 save               # persist the process list
 //   pm2 startup            # print the command to enable boot-time auto-start
 //
-// Adjust `cwd` if you clone the repo somewhere other than the path below.
+// `cwd` is derived from this file's location, so it works wherever you clone
+// the repo — no editing required.
 module.exports = {
   apps: [
     {
       name: "order-tracker",
       script: "dist/index.js",
-      cwd: "/Users/knambiar/Code/Personal/tracker",
+      cwd: __dirname,
       instances: 1,
       exec_mode: "fork",
       autorestart: true,
