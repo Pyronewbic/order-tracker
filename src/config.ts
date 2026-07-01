@@ -3,6 +3,13 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 
 /**
+ * Account labels become JSON keys in `accounts.json`, per-account keys in
+ * `state.json`, and log prefixes; keep them to a safe character set. Shared with
+ * the `npm run auth` CLI so both enforce the same rule.
+ */
+export const LABEL_RE = /^[A-Za-z0-9_.-]+$/;
+
+/**
  * Parse a boolean-ish env var. Absent → `defaultValue`; otherwise truthy for
  * "1"/"true"/"yes"/"on" (case-insensitive), falsy for anything else.
  */
@@ -207,10 +214,21 @@ export async function loadAccounts(file: string): Promise<GmailAccount[]> {
       `Invalid accounts file "${file}": expected { "<label>": "<refresh_token>" }.`,
     );
   }
-  return Object.entries(parsed.data).map(([label, refreshToken]) => ({
+  const accounts = Object.entries(parsed.data).map(([label, refreshToken]) => ({
     label,
     refreshToken,
   }));
+  // JSON keys are already unique; validate the label format so a stray/whitespace
+  // label can't silently become a state key and log prefix.
+  for (const { label } of accounts) {
+    if (!LABEL_RE.test(label)) {
+      throw new Error(
+        `Invalid account label "${label}" in "${file}". ` +
+          `Use letters, digits, "_", "-", "." only.`,
+      );
+    }
+  }
+  return accounts;
 }
 
 export type RuntimeConfig = Config & { accounts: GmailAccount[] };

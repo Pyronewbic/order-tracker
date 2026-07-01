@@ -140,7 +140,7 @@ async function main(): Promise<void> {
     running = true;
     try {
       const state = await loadState(cfg.STATE_FILE);
-      await runTick(deps, gmailByLabel, state);
+      const stats = await runTick(deps, gmailByLabel, state);
       // Dry-run is a non-destructive preview: never persist advanced watermarks,
       // so a later live run still processes the same mail.
       if (cfg.DRY_RUN) {
@@ -148,6 +148,9 @@ async function main(): Promise<void> {
       } else {
         await saveState(cfg.STATE_FILE, state);
       }
+      await log.info(
+        `Tick complete: ${stats.updates} update(s), ${stats.llmCalls} LLM call(s).`,
+      );
     } catch (err) {
       await log.error(`Poll failed: ${String(err)}`);
       await notifier.notify(`⚠️ Order tracker poll failed: ${String(err)}`);

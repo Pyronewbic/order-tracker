@@ -8,6 +8,12 @@ import type { Logger } from "../logger.js";
 const txt = (p: any): string => (p?.rich_text ?? []).map((t: { plain_text: string }) => t.plain_text).join("");
 const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({ rich_text: [{ text: { content: s } }] });
 
+// Notion property bags are dynamically shaped; read them through this helper
+// instead of sprinkling `any` casts at every call site.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type NotionProps = Record<string, any>;
+const propsOf = (r: unknown): NotionProps => (r as { properties: NotionProps }).properties;
+
 /** Currency of a book row, from the price symbol (₹/¥/$) with Source as fallback. */
 function bookCurrency(price: string, source: string): Currency {
   if (price.includes("₹")) return "INR";
@@ -92,7 +98,7 @@ export class SpendSummary {
 
     // Books: convert manual Price → USD, refresh per-row Spend(USD), accumulate.
     for (const r of await this.queryAll(this.booksDbId)) {
-      const props = (r as { properties: Record<string, any> }).properties;
+      const props = propsOf(r);
       const price = txt(props.Price);
       if (!price) continue;
       const amount = parseAmount(price);
@@ -116,7 +122,7 @@ export class SpendSummary {
     // Games: already carry Spend(USD); accumulate by purchase month.
     if (this.gamesDbId) {
       for (const r of await this.queryAll(this.gamesDbId)) {
-        const props = (r as { properties: Record<string, any> }).properties;
+        const props = propsOf(r);
         const usd = props["Spend (USD)"]?.number;
         if (typeof usd !== "number") continue;
         const dateStr: string = props.Date?.date?.start ?? (r as { created_time: string }).created_time;
@@ -130,7 +136,7 @@ export class SpendSummary {
     // for reference; the summary just doesn't count it).
     if (this.generalDbId) {
       for (const r of await this.queryAll(this.generalDbId)) {
-        const props = (r as { properties: Record<string, any> }).properties;
+        const props = propsOf(r);
         if (isTerminalGeneralStatus(props.Status?.select?.name ?? "")) continue;
         const usd = props["Spend (USD)"]?.number;
         if (typeof usd !== "number") continue;
@@ -143,7 +149,7 @@ export class SpendSummary {
     // Upsert summary rows (create new / update changed only).
     const existing = new Map<string, { pageId: string; usd: number; items: number }>();
     for (const r of await this.queryAll(this.summaryDbId)) {
-      const props = (r as { properties: Record<string, any> }).properties;
+      const props = propsOf(r);
       const source = props.Source?.select?.name;
       const month = txt(props.Month);
       if (!source || !month) continue;

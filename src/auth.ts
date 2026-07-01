@@ -2,16 +2,13 @@ import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import { google } from "googleapis";
-import { loadAuthConfig } from "./config.js";
+import { loadAuthConfig, LABEL_RE } from "./config.js";
 import { writeFileAtomic } from "./fsutil.js";
 
 // Read-only is the least-privilege scope that still exposes message bodies (the
 // parser needs subject + body for status/tracking/amount). Gmail has no
 // per-label OAuth scope, and we deliberately never request a send/modify scope.
 const SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
-
-// Labels become JSON keys and appear in logs; keep them to a safe character set.
-const LABEL_RE = /^[A-Za-z0-9_.-]+$/;
 
 /**
  * One-time interactive OAuth flow for a single account. Spins up a loopback
