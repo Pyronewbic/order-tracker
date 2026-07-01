@@ -1,23 +1,53 @@
 import http from "node:http";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { AddressInfo } from "node:net";
 import { google } from "googleapis";
-import { loadConfig } from "./config.js";
+import { loadAuthConfig, LABEL_RE } from "./config.js";
+import { writeFileAtomic } from "./fsutil.js";
 
+// Read-only is the least-privilege scope that still exposes message bodies (the
+// parser needs subject + body for status/tracking/amount). Gmail has no
+// per-label OAuth scope, and we deliberately never request a send/modify scope.
 const SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"];
-const ENV_PATH = ".env";
 
 /**
- * One-time interactive OAuth flow. Spins up a loopback server, sends you to
- * Google's consent screen, captures the authorization code, exchanges it for a
- * refresh token, and writes that token back into `.env`.
+ * One-time interactive OAuth flow for a single account. Spins up a loopback
+ * server, sends you to Google's consent screen, captures the authorization
+ * code, exchanges it for a refresh token, and stores that token under the given
+ * label in `accounts.json`.
+ *
+ * Usage:
+ *   npm run auth -- <label>     authorize one inbox (e.g. `npm run auth -- work`)
+ *   npm run auth -- --list      list configured labels (also `npm run accounts`)
  *
  * Requires GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET from a Google Cloud "Desktop
  * app" OAuth client, whose loopback redirect (http://localhost:PORT) needs no
- * pre-registration.
+ * pre-registration. The same OAuth app is shared across all accounts; pick the
+ * intended Google account in the browser chooser each time.
  */
 async function main(): Promise<void> {
-  const cfg = loadConfig();
+  const cfg = loadAuthConfig();
+  const args = process.argv.slice(2).filter((a) => a !== "--");
+  const wantList = args.includes("--list");
+  const label = args.find((a) => !a.startsWith("-"));
+
+  if (wantList) {
+    await listAccounts(cfg.ACCOUNTS_FILE);
+    return;
+  }
+
+  if (!label) {
+    throw new Error(
+      "Missing account label. Usage: `npm run auth -- <label>` " +
+        "(or `npm run accounts` to list configured labels).",
+    );
+  }
+  if (!LABEL_RE.test(label)) {
+    throw new Error(
+      `Invalid label "${label}". Use letters, digits, "_", "-", "." only.`,
+    );
+  }
+
   const port = cfg.OAUTH_REDIRECT_PORT;
   const redirectUri = `http://localhost:${port}`;
 
@@ -33,19 +63,34 @@ async function main(): Promise<void> {
     scope: SCOPES,
   });
 
+  console.log(`\nAuthorizing account "${label}".`);
+  console.log("In the browser chooser, pick the Google account you intend to link.");
+
   const code = await waitForCode(authUrl, port);
   const { tokens } = await oauth2.getToken(code);
 
   if (!tokens.refresh_token) {
     throw new Error(
       "Google did not return a refresh token. Revoke prior access at " +
-        "https://myaccount.google.com/permissions and run `npm run auth` again.",
+        "https://myaccount.google.com/permissions and run the command again.",
     );
   }
 
-  await upsertEnv("GMAIL_REFRESH_TOKEN", tokens.refresh_token);
-  console.log("\n✓ Refresh token saved to .env (GMAIL_REFRESH_TOKEN).");
-  console.log("  You can now run `npm start`.");
+  await upsertAccount(cfg.ACCOUNTS_FILE, label, tokens.refresh_token);
+  console.log(`\n✓ Saved refresh token for "${label}" to ${cfg.ACCOUNTS_FILE}.`);
+  console.log("  Run `npm run accounts` to see all configured accounts, or `npm start`.");
+}
+
+/** Print the configured account labels (no tokens). */
+async function listAccounts(file: string): Promise<void> {
+  const accounts = await readAccounts(file);
+  const labels = Object.keys(accounts);
+  if (labels.length === 0) {
+    console.log(`No accounts configured. Run \`npm run auth -- <label>\` to add one.`);
+    return;
+  }
+  console.log(`Configured accounts (${labels.length}):`);
+  for (const label of labels) console.log(`  - ${label}`);
 }
 
 /** Open a loopback server, prompt the user, and resolve with the auth code. */
@@ -87,24 +132,37 @@ function waitForCode(authUrl: string, port: number): Promise<string> {
   });
 }
 
-/** Insert or replace a single KEY=value line in the .env file. */
-async function upsertEnv(key: string, value: string): Promise<void> {
-  let contents = "";
+/** Read + validate `accounts.json`, returning `{}` when the file is absent. */
+async function readAccounts(file: string): Promise<Record<string, string>> {
+  let raw: string;
   try {
-    contents = await readFile(ENV_PATH, "utf8");
+    raw = await readFile(file, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw err;
   }
+  const parsed: unknown = JSON.parse(raw);
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Object.values(parsed).some((v) => typeof v !== "string" || v.length === 0)
+  ) {
+    throw new Error(
+      `Existing ${file} is not a { "<label>": "<token>" } object; fix or remove it first.`,
+    );
+  }
+  return parsed as Record<string, string>;
+}
 
-  const line = `${key}=${value}`;
-  const re = new RegExp(`^${key}=.*$`, "m");
-  const next = re.test(contents)
-    ? contents.replace(re, line)
-    : (contents.endsWith("\n") || contents === "" ? contents : contents + "\n") +
-      line +
-      "\n";
-
-  await writeFile(ENV_PATH, next);
+/** Insert or replace one label's token, writing the file atomically at 0600. */
+async function upsertAccount(
+  file: string,
+  label: string,
+  refreshToken: string,
+): Promise<void> {
+  const accounts = await readAccounts(file);
+  accounts[label] = refreshToken;
+  await writeFileAtomic(file, JSON.stringify(accounts, null, 2));
 }
 
 main().catch((err) => {

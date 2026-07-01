@@ -4,8 +4,9 @@ import type { Notifier } from "./telegram/client.js";
 import { STATUS_EMOJI, escapeHtml } from "./telegram/client.js";
 import { ORDER_STATUSES, type OrderStatus } from "./types.js";
 
-// Statuses worth a daily heads-up (delivered items are done, so omit them).
-const ACTIVE: OrderStatus[] = ["Arriving Soon", "In Transit"];
+// Statuses worth a daily heads-up — still in motion. Delivered/Cancelled/
+// Returned are done, so they're omitted. Order here is the display order.
+const ACTIVE: OrderStatus[] = ["Delayed", "Arriving Soon", "In Transit", "Ordered"];
 
 const isOrderStatus = (s: string): s is OrderStatus =>
   (ORDER_STATUSES as readonly string[]).includes(s);

@@ -1,8 +1,29 @@
 {
   "name": "order-tracker",
   "version": "1.0.0",
-  "description": "Poll Gmail for Amazon shipping emails and update a Notion order database.",
+  "description": "Poll one or more Gmail inboxes for order, shipping, and receipt mail and sync shipment status and spend into Notion, with an optional Telegram digest and LLM fallback.",
   "type": "module",
+  "private": true,
+  "license": "MIT",
+  "author": "Pyronewbic",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pyronewbic/order-tracker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Pyronewbic/order-tracker/issues"
+  },
+  "homepage": "https://github.com/Pyronewbic/order-tracker#readme",
+  "keywords": [
+    "gmail",
+    "notion",
+    "order-tracking",
+    "shipment-tracking",
+    "spend-tracker",
+    "telegram",
+    "amazon",
+    "ebay"
+  ],
   "engines": {
     "node": ">=20"
   },
@@ -11,10 +32,16 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "auth": "tsx src/auth.ts",
+    "accounts": "tsx src/auth.ts -- --list",
     "telegram:chat-id": "tsx src/telegram/chat-id.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.2",
     "@notionhq/client": "^2.2.15",
     "dotenv": "^16.4.5",
     "fuse.js": "^7.0.0",
@@ -25,7 +52,11 @@
   "devDependencies": {
     "@types/node": "^22.7.4",
     "@types/node-cron": "^3.0.11",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.4",
     "tsx": "^4.19.1",
-    "typescript": "^5.6.2"
+    "typescript": "^5.6.2",
+    "typescript-eslint": "^8.62.1"
   }
 }

@@ -38,7 +38,7 @@ export class GmailClient {
    * `after:` clause is appended so only newer mail is returned.
    */
   async listMessageIds(query: string, afterEpochSec?: number): Promise<string[]> {
-    const q = afterEpochSec ? `${query} after:${afterEpochSec}` : query;
+    const q = afterEpochSec !== undefined ? `${query} after:${afterEpochSec}` : query;
     const ids: string[] = [];
     let pageToken: string | undefined;
 

@@ -1,0 +1,6 @@
+dist/
+node_modules/
+package-lock.json
+*.log
+# Docs are hand-maintained (tables, callouts); keep Prettier out of them.
+*.md

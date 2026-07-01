@@ -1,6 +1,7 @@
-import type { OrderStatus } from "../types.js";
+import type { OrderCategory, OrderStatus } from "../types.js";
 import type { ParsedMessage } from "./client.js";
 import { detectCarrier, extractTrackingNumbers } from "../carriers.js";
+import { classifyItem, tagsFor } from "../categorize.js";
 
 export interface ShipmentUpdate {
   status: OrderStatus;
@@ -9,9 +10,16 @@ export interface ShipmentUpdate {
   itemName: string;
   /** Tracking numbers found in the email, used to link carrier updates. */
   trackingNumbers: string[];
+  /** Amazon order number (NNN-NNNNNNN-NNNNNNN), if present. Links title-less
+   * updates (e.g. Amazon IN "Delivered: 1 item | Order # …") back to a row. */
+  orderId?: string;
   /** Carrier name ("Amazon", "UPS", …) or "Unknown". */
   carrier: string;
-  /** Short human-readable detail recorded in Notion / notifications. */
+  /** Item-type category, or null when it can't be determined confidently. */
+  category: OrderCategory | null;
+  /** Deterministic tags (franchise/attributes); may be empty. */
+  tags: string[];
+  /** Short human-readable detail used in logs / notifications. */
   detail: string;
 }
 
@@ -22,6 +30,38 @@ export interface ShipmentUpdate {
  * later one.
  */
 const STATUS_RULES: { status: OrderStatus; patterns: RegExp[] }[] = [
+  // Decisive states first; "Ordered" (weakest signal) is checked last so a
+  // "your order has shipped" email resolves to In Transit, not Ordered.
+  {
+    status: "Cancelled",
+    patterns: [
+      /\bhas been cancell?ed\b/i,
+      /\border (?:was |has been |is )?cancell?ed\b/i,
+      /\b(?:we|amazon)[^.]{0,30}cancell?ed your\b/i,
+      /^cancell?ed[:\s-]/i,
+      /ご注文[^。]{0,12}キャンセル/,
+    ],
+  },
+  {
+    status: "Returned",
+    patterns: [
+      /\byour return\b/i,
+      /\breturn (?:was |has been |is )?(?:received|completed|processed)\b/i,
+      /\brefund (?:was |has been |is )?(?:issued|processed|completed)\b/i,
+      /\breturned to (?:sender|seller|us)\b/i,
+      /^returned[:\s-]/i,
+    ],
+  },
+  {
+    status: "Delayed",
+    patterns: [
+      /\b(?:delivery|shipment|package|order) (?:is |has been |was )?delayed\b/i,
+      /\bdelay(?:ed)? (?:in )?(?:your )?(?:delivery|shipment)\b/i,
+      /\bdelivery (?:exception|attempt(?:ed)? (?:failed|unsuccessful))\b/i,
+      /\b(?:couldn'?t|could not|unable to|were unable to|failed to) (?:be )?deliver/i,
+      /\battempted delivery\b/i,
+    ],
+  },
   {
     status: "Arriving Soon",
     patterns: [
@@ -49,6 +89,16 @@ const STATUS_RULES: { status: OrderStatus; patterns: RegExp[] }[] = [
       /in transit/i,
       /dispatched/i,
       /label created/i,
+    ],
+  },
+  {
+    status: "Ordered",
+    patterns: [
+      /^ordered[:\s-]/i,
+      /\border (?:has been )?(?:placed|confirmed|received)\b/i,
+      /\bthank you for your order\b/i,
+      /\bwe(?:'ve| have) received your order\b/i,
+      /\border confirmation\b/i,
     ],
   },
 ];
@@ -83,6 +133,16 @@ export function extractItemName(subject: string): string {
   return "";
 }
 
+const ORDER_NUMBER_RE = /\b\d{3}-\d{7}-\d{7}\b/;
+
+/** Amazon order number from the subject (preferred) or body, if present. */
+function extractOrderId(msg: ParsedMessage): string | undefined {
+  return (
+    msg.subject.match(ORDER_NUMBER_RE)?.[0] ??
+    (msg.body || msg.snippet).match(ORDER_NUMBER_RE)?.[0]
+  );
+}
+
 /** Trim Amazon noise like "and 2 more items" and surrounding punctuation. */
 function cleanItemName(raw: string): string {
   return raw
@@ -93,25 +153,43 @@ function cleanItemName(raw: string): string {
 }
 
 /**
+ * Assemble a {@link ShipmentUpdate} for a known status. Carrier, tracking
+ * numbers, and detail are always derived deterministically from the email here;
+ * the LLM fallback supplies only `status` (and optionally `itemNameOverride`) so
+ * tracking numbers are never invented by the model.
+ */
+export function buildUpdate(
+  msg: ParsedMessage,
+  status: OrderStatus,
+  itemNameOverride?: string,
+): ShipmentUpdate {
+  const carrier = detectCarrier(msg.from);
+  const haystack = `${msg.subject}\n${msg.body || msg.snippet}`;
+  const itemName = itemNameOverride?.trim() || extractItemName(msg.subject);
+
+  const signal = { itemName, from: msg.from, subject: msg.subject };
+  return {
+    status,
+    itemName,
+    trackingNumbers: extractTrackingNumbers(haystack, carrier),
+    orderId: extractOrderId(msg),
+    carrier: carrier?.name ?? "Unknown",
+    category: classifyItem(signal),
+    tags: tagsFor(signal),
+    detail: msg.subject.trim(),
+  };
+}
+
+/**
  * Parse a Gmail message into a {@link ShipmentUpdate}, or null if no shipping
- * status can be determined. Unlike before, an email with a recognizable status
- * but no item name is still returned — it can be matched to a Notion row by
- * tracking number instead.
+ * status can be determined. An email with a recognizable status but no item
+ * name is still returned — it can be matched to a Notion row by tracking number
+ * instead. Returning null is the signal for the optional LLM fallback to try.
  */
 export function parseMessage(msg: ParsedMessage): ShipmentUpdate | null {
   // Subject is the most reliable status signal; fall back to the body.
   const status =
     detectStatus(msg.subject) ?? detectStatus(msg.body) ?? detectStatus(msg.snippet);
   if (!status) return null;
-
-  const carrier = detectCarrier(msg.from);
-  const haystack = `${msg.subject}\n${msg.body || msg.snippet}`;
-
-  return {
-    status,
-    itemName: extractItemName(msg.subject),
-    trackingNumbers: extractTrackingNumbers(haystack, carrier),
-    carrier: carrier?.name ?? "Unknown",
-    detail: msg.subject.trim(),
-  };
+  return buildUpdate(msg, status);
 }
