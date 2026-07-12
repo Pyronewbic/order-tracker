@@ -78,8 +78,9 @@ npm start                    # run the compiled build
 ```
 
 Requirements: **Node.js ≥ 20**, a Google Cloud OAuth client, and a Notion
-integration + database. There is no automated test suite; `npm run typecheck`
-runs the compiler in check mode.
+integration + database. The deterministic core has a unit suite (`npm test`,
+Node's built-in test runner); CI runs typecheck + lint + build + test on every
+push and pull request.
 
 The Quickstart above is deliberately terse — the OAuth consent-screen steps
 (publish to **Production** so refresh tokens don't expire), the exact Notion
