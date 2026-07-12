@@ -47,6 +47,52 @@ export function classifyItem(signal: ItemSignal): OrderCategory | null {
   return null;
 }
 
+// Keyword → Tech-Inventory accessory bucket, checked most-specific first. These
+// are the categories used by devices; extend with the gear you buy. An item that
+// matches none of these but is still a tech accessory/electronic falls back to
+// "Other" (see techAccessoryCategory).
+const TECH_BUCKETS: [RegExp, string][] = [
+  [
+    /\b(dac|amps?|amplifiers?|iems?|in-?ear|earphones?|earbuds?|headphones?|head ?sets?|microphones?|\bmics?\b)\b/i,
+    "Audio",
+  ],
+  [/\b(capture cards?|capture)\b/i, "Capture"],
+  [
+    /\b(ssds?|hdds?|nvme|hard drives?|enclosures?|micro ?sd|sd cards?|memory cards?|flash drives?|usb drives?|m\.2)\b/i,
+    "Storage",
+  ],
+  [
+    /\b(chargers?|charging|gan|power ?banks?|power ?adapters?|wall chargers?|batter(?:y|ies))\b/i,
+    "Power",
+  ],
+  [
+    /\b(hubs?|docks?|docking|dongles?|adapters?|kvm|splitters?|ethernet|hdmi switch)\b/i,
+    "Connectivity",
+  ],
+  [/\b(monitors?|displays?|external screens?)\b/i, "Display"],
+  [
+    /\b(controllers?|gamepads?|joy-?cons?|keyboards?|mouse|mice|trackpads?|stylus(?:es)?)\b/i,
+    "Input",
+  ],
+  [/\b(cables?|cords?|hdmi lead|usb-?c cable)\b/i, "Cable"],
+  [/\b(cases?|sleeves?|pouch(?:es)?|bags?|covers?|skins?|folios?)\b/i, "Case/Carry"],
+];
+
+/**
+ * If an order item is a tech accessory (the kind that pairs with a device),
+ * return its Tech-Inventory category bucket; else null. A specific keyword wins;
+ * otherwise an item the general classifier calls an Accessory or Electronics
+ * falls back to "Other". Books/games/digital/groceries/clothing → null.
+ */
+export function techAccessoryCategory(signal: ItemSignal): string | null {
+  const hay = `${signal.itemName}\n${signal.subject}`;
+  for (const [re, bucket] of TECH_BUCKETS) if (re.test(hay)) return bucket;
+  // No specific bucket: accept only a clear Accessory. NOT "Electronics" — that
+  // also covers whole devices (consoles, laptops, tablets), which aren't
+  // accessories and belong in the Devices inventory, not here.
+  return classifyItem(signal) === "Accessory" ? "Other" : null;
+}
+
 // Franchise name → canonical tag. Extend with the series you buy.
 const FRANCHISES: [RegExp, string][] = [
   [/zelda/i, "Zelda"],

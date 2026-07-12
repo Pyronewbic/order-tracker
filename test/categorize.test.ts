@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { classifyItem, tagsFor } from "../src/categorize.js";
+import { classifyItem, tagsFor, techAccessoryCategory } from "../src/categorize.js";
 
 /** Build an ItemSignal; item name is the main signal, sender/subject optional. */
 const sig = (
@@ -53,4 +53,28 @@ test("tagsFor tags amiibo and the Switch 2 platform", () => {
 
 test("tagsFor is empty for an untagged generic item", () => {
   assert.deepEqual(tagsFor(sig("Generic Widget 3000")), []);
+});
+
+test("techAccessoryCategory maps tech accessories to their bucket", () => {
+  assert.equal(techAccessoryCategory(sig("UGREEN Nexode 100W GaN charger")), "Power");
+  assert.equal(techAccessoryCategory(sig("USB-C to HDMI cable 2m")), "Cable");
+  assert.equal(
+    techAccessoryCategory(sig("UGREEN Revodok Pro 6-in-1 hub")),
+    "Connectivity",
+  );
+  assert.equal(techAccessoryCategory(sig("Samsung 2TB NVMe SSD")), "Storage");
+  assert.equal(
+    techAccessoryCategory(sig("Spigen sleeve for MacBook Pro 16")),
+    "Case/Carry",
+  );
+  assert.equal(techAccessoryCategory(sig("FiiO KA13 portable headphone DAC")), "Audio");
+  assert.equal(techAccessoryCategory(sig("Nintendo Switch 2 Pro Controller")), "Input");
+});
+
+test("techAccessoryCategory excludes whole devices and non-tech items", () => {
+  // A console/laptop is a device, not an accessory → not routed here.
+  assert.equal(techAccessoryCategory(sig("Nintendo Switch 2")), null);
+  assert.equal(techAccessoryCategory(sig("MacBook Pro 16-inch")), null);
+  // Non-tech purchases are ignored.
+  assert.equal(techAccessoryCategory(sig("Organic Bananas 1kg")), null);
 });

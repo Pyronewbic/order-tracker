@@ -31,7 +31,15 @@ import {
   type GeneralStatus,
 } from "./general/lifecycle.js";
 import { parseEbayOrder, parseEbayLifecycle } from "./general/ebay.js";
-import { classifyItem } from "./categorize.js";
+import { classifyItem, techAccessoryCategory } from "./categorize.js";
+import {
+  accessoryStatusFromGeneral,
+  accessoryStatusFromShipment,
+  planAccessoryUpdate,
+  type AccessoriesNotionClient,
+  type AccessoryRow,
+  type AccessoryStatus,
+} from "./accessories/notion.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
 import type { Notifier } from "./telegram/client.js";
@@ -53,6 +61,8 @@ export interface Deps {
   summary: SpendSummary | null;
   /** Optional general-purchases tracking; null when disabled. */
   general: GeneralNotionClient | null;
+  /** Optional tech-accessory tracking (Tech Inventory Accessories DB); null off. */
+  accessories: AccessoriesNotionClient | null;
 }
 
 /** Mutable per-tick accumulators: shared Notion rows + cross-account counters. */
@@ -63,6 +73,9 @@ interface TickContext {
    * shared so the shipping fallback and the general passes dedup against one
    * map (empty when the general DB is disabled). */
   generalOrders: Map<string, GeneralRow>;
+  /** Tech-accessory order map (order # → row), loaded once per tick; shared so
+   * the shipping/confirmation/lifecycle passes dedup (empty when off). */
+  accessoryOrders: Map<string, AccessoryRow>;
   /** Notion updates applied this tick (for the update-cap alarm). */
   updates: number;
   /** LLM calls made this tick across ALL accounts (for the per-tick cap). */
@@ -187,6 +200,7 @@ export async function runTick(
     rows,
     rowsById: new Map(rows.map((r) => [r.pageId, r])),
     generalOrders: new Map(),
+    accessoryOrders: new Map(),
     updates: 0,
     llmCalls: 0,
     llmCapAlerted: false,
@@ -199,6 +213,14 @@ export async function runTick(
       ctx.generalOrders = await deps.general.listOrders();
     } catch (err) {
       await log.error(`Failed to load general orders: ${String(err)}`);
+    }
+  }
+  // Same for the tech-accessory order map (Tech Inventory Accessories DB).
+  if (deps.accessories) {
+    try {
+      ctx.accessoryOrders = await deps.accessories.listByOrder();
+    } catch (err) {
+      await log.error(`Failed to load accessories: ${String(err)}`);
     }
   }
 
@@ -744,6 +766,94 @@ function amazonMerchant(from: string): string {
   return "Amazon US";
 }
 
+/** Amazon order-details URL for a storefront + order number. */
+function amazonOrderUrl(merchant: string, orderId: string): string {
+  const tld =
+    merchant === "Amazon IN" ? "in" : merchant === "Amazon JP" ? "co.jp" : "com";
+  return `https://www.amazon.${tld}/gp/css/order-details?orderID=${orderId}`;
+}
+
+/**
+ * Auto-add or advance a tech accessory in the Tech Inventory Accessories DB.
+ * Spend-only (amount comes from an order confirmation; a shipment carries none),
+ * deduped on the shared per-tick accessory map, and it never steals an order the
+ * general DB already owns (avoids a duplicate during the changeover). "From now"
+ * is inherent: the calling pass only sees mail newer than its watermark. Returns
+ * true when it handled the order (created / advanced / enriched, or dry-run).
+ */
+async function upsertAccessory(
+  deps: Deps,
+  ctx: TickContext,
+  a: {
+    label: string;
+    orderId: string;
+    name: string;
+    category: string;
+    status: AccessoryStatus;
+    merchant: string;
+    dateMs: number;
+    amount?: number;
+    currency?: string;
+  },
+): Promise<boolean> {
+  const { cfg, log, accessories } = deps;
+  if (!accessories) return false;
+  if (ctx.generalOrders.has(a.orderId)) return false; // already owned by general DB
+
+  const existing = ctx.accessoryOrders.get(a.orderId);
+
+  if (cfg.DRY_RUN) {
+    await log.info(
+      `[${a.label}] [dry-run] would ${existing ? "advance" : "add"} accessory ${a.orderId} → ${a.status} (${a.category}).`,
+    );
+    return true;
+  }
+
+  try {
+    if (existing) {
+      if (planAccessoryUpdate(existing.status, a.status) === "apply") {
+        await accessories.setStatus(existing.pageId, a.status);
+        existing.status = a.status;
+        ctx.updates++;
+        await log.info(`[${a.label}] Accessory ${a.orderId} → ${a.status}.`);
+      }
+      // Enrich the price if this call has one (a confirmation arriving after the
+      // shipment that first created the row).
+      if (typeof a.amount === "number") {
+        await accessories.updateAccessory(existing.pageId, {
+          amount: a.amount,
+          currency: a.currency,
+        });
+      }
+    } else {
+      const pageId = await accessories.createAccessory(a.orderId, {
+        name: a.name,
+        category: a.category,
+        amount: a.amount,
+        currency: a.currency,
+        orderUrl: amazonOrderUrl(a.merchant, a.orderId),
+        status: a.status,
+        notes: `Auto-added from ${a.merchant} order ${a.orderId}.`,
+      });
+      ctx.accessoryOrders.set(a.orderId, {
+        pageId,
+        orderId: a.orderId,
+        status: a.status,
+      });
+      ctx.updates++;
+      await log.info(
+        `[${a.label}] Added accessory ${a.orderId}: "${a.name.slice(0, 40)}" (${a.category}, ${a.status}).`,
+      );
+    }
+    return true;
+  } catch (err) {
+    await log.error(
+      `[${a.label}] Failed upserting accessory ${a.orderId}: ${String(err)}`,
+    );
+    return false;
+  }
+}
+
 /**
  * E3: capture an unmatched, non-book shipping item in the General DB instead of
  * dropping it as "No Notion match". Requires a stable Amazon order # (tracking-
@@ -763,7 +873,34 @@ async function routeToGeneral(
   ctx: TickContext,
 ): Promise<boolean> {
   const { cfg, log, general } = deps;
-  if (!general || !update.orderId) return false;
+  if (!update.orderId) return false;
+
+  // Tech accessories go to the Tech Inventory Accessories DB, not the general DB.
+  // Advance one already tracked there, or create a new one from a titled shipment.
+  if (deps.accessories) {
+    const known = ctx.accessoryOrders.has(update.orderId);
+    const cat = update.itemName
+      ? techAccessoryCategory({
+          itemName: update.itemName,
+          from: msg.from,
+          subject: msg.subject,
+        })
+      : null;
+    if (known || cat) {
+      const handled = await upsertAccessory(deps, ctx, {
+        label,
+        orderId: update.orderId,
+        name: update.itemName || `Order ${update.orderId}`,
+        category: cat ?? "Other",
+        status: accessoryStatusFromShipment(update.status),
+        merchant: amazonMerchant(msg.from),
+        dateMs: msg.internalDateMs,
+      });
+      if (handled) return true;
+    }
+  }
+
+  if (!general) return false;
   if (
     update.category === "Book" ||
     update.category === "Game" ||
@@ -910,7 +1047,7 @@ async function runGeneral(
   // visible to the others within the same tick.
   const existing = ctx.generalOrders;
   await runGeneralConfirmations(label, gmail, deps, ctx, existing, state);
-  await runGeneralLifecycle(label, gmail, deps, existing, state);
+  await runGeneralLifecycle(label, gmail, deps, ctx, existing, state);
   await runEbay(label, gmail, deps, ctx, existing, state);
 }
 
@@ -957,6 +1094,35 @@ async function runGeneralConfirmations(
       if (o.itemNames.some((n) => matchRow(n, ctx.rows, cfg.MATCH_THRESHOLD))) {
         await log.info(`[${label}] Order ${o.orderId} matches a tracked book; skipped.`);
         continue;
+      }
+
+      // Tech accessories go to the Tech Inventory Accessories DB (with price),
+      // not the general Purchases DB.
+      if (deps.accessories) {
+        const techCat = techAccessoryCategory({
+          itemName: o.dominantItem,
+          from: msg.from,
+          subject: msg.subject,
+        });
+        if (
+          techCat &&
+          (await upsertAccessory(deps, ctx, {
+            label,
+            orderId: o.orderId,
+            name:
+              o.itemCount > 1
+                ? `${o.dominantItem} (+${o.itemCount - 1})`
+                : o.dominantItem,
+            category: techCat,
+            status: "Ordered",
+            merchant: o.merchant,
+            dateMs: o.dateMs,
+            amount: o.total,
+            currency: o.currency,
+          }))
+        ) {
+          continue; // routed to Accessories — skip the general DB
+        }
       }
 
       const category = await categorizeOrder(
@@ -1144,6 +1310,7 @@ async function runGeneralLifecycle(
   label: string,
   gmail: GmailClient,
   deps: Deps,
+  ctx: TickContext,
   existing: Map<string, { pageId: string; orderId: string; status: string }>,
   state: State,
 ): Promise<void> {
@@ -1172,6 +1339,22 @@ async function runGeneralLifecycle(
 
     const ev = parseLifecycleEmail(msg);
     if (!ev) continue;
+
+    // A tech accessory tracked in the Accessories DB advances there, not here.
+    if (
+      ctx.accessoryOrders.has(ev.orderId) &&
+      (await upsertAccessory(deps, ctx, {
+        label,
+        orderId: ev.orderId,
+        name: `Order ${ev.orderId}`,
+        category: "Other",
+        status: accessoryStatusFromGeneral(ev.status),
+        merchant: amazonMerchant(msg.from),
+        dateMs: msg.internalDateMs,
+      }))
+    ) {
+      continue;
+    }
 
     const row = existing.get(ev.orderId);
     if (!row) continue; // not a general order (book/game, or never confirmed)

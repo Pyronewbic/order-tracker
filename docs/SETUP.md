@@ -251,6 +251,21 @@ not pre-fill its options.
 | `ETA` | Date (delivery ETA for routed shipment items; drives the Arrivals calendar) |
 | `Delivered on` | Date (actual delivered-on date) |
 
+**Tech Accessories DB** — `TECH_ACCESSORIES_DATABASE_ID` (auto-adds tech-accessory
+purchases; whole devices are not routed here). Enable `GENERAL_DATABASE_ID` too so
+the order-confirmation pass can supply the price:
+
+| Property | Notion type |
+| --- | --- |
+| `Name` | Title |
+| `Order #` | Text (rich text) — dedup key; manual rows leave it blank and are never touched |
+| `Status` | Select — delivery ladder `Ordered` / `Shipped` / `Arriving` / `Owned` (+ your own `Wishlist`, which the tracker never sets) |
+| `Amount` | Number |
+| `Currency` | Select (e.g. USD / INR) |
+| `Category` | Select — accessory buckets (Power / Cable / Connectivity / Storage / Case/Carry / Audio / Input / Capture / Display / Other) |
+| `Order link` | URL |
+| `Notes` | Text (rich text) |
+
 **Digital Games DB** — `GAMES_DATABASE_ID`:
 
 | Property | Notion type |

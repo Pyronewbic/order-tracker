@@ -11,6 +11,7 @@ import { ForwarderNotionClient } from "./forwarder/notion.js";
 import { GamesNotionClient } from "./games/notion.js";
 import { SpendSummary } from "./summary/notion.js";
 import { GeneralNotionClient } from "./general/notion.js";
+import { AccessoriesNotionClient } from "./accessories/notion.js";
 import { sendDigest } from "./digest.js";
 import { createNotifier } from "./telegram/client.js";
 import { runTick, type Deps } from "./pipeline.js";
@@ -106,6 +107,23 @@ async function main(): Promise<void> {
     }
   }
 
+  // Optional tech-accessory tracking → Tech Inventory Accessories DB.
+  let accessories: AccessoriesNotionClient | null = null;
+  if (cfg.TECH_ACCESSORIES_DATABASE_ID) {
+    const client = new AccessoriesNotionClient(
+      cfg.NOTION_API_KEY,
+      cfg.TECH_ACCESSORIES_DATABASE_ID,
+    );
+    try {
+      await client.verifyAccess();
+      accessories = client;
+    } catch (err) {
+      await log.error(
+        `Accessories DB access check failed; tech-accessory tracking disabled: ${String(err)}`,
+      );
+    }
+  }
+
   // Optional cross-DB spend summary (Source × Month, USD). Same failure
   // isolation: a misconfig disables only the summary.
   let summary: SpendSummary | null = null;
@@ -151,6 +169,7 @@ async function main(): Promise<void> {
     games,
     summary,
     general,
+    accessories,
   };
 
   // Guard against overlapping runs if a poll outlives its interval.
@@ -201,6 +220,7 @@ async function main(): Promise<void> {
       (forwarder ? ", forwarder: on" : "") +
       (games ? ", games: on" : "") +
       (general ? ", general: on" : "") +
+      (accessories ? ", accessories: on" : "") +
       (summary ? ", summary: on" : "") +
       (llm ? ", LLM fallback: on" : "") +
       (cfg.DRY_RUN ? ", DRY-RUN" : "") +

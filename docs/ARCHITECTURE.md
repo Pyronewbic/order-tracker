@@ -213,7 +213,7 @@ DB uses a parallel, simpler ladder (`Ordered → Shipped → Delivered`, termina
 Every DB is **opt-in** via its own env var; if the var is unset, that feature is
 off, and if the DB access check fails at startup the feature is disabled with a
 logged warning rather than crashing the process (only the primary book DB is
-required). There are five write targets, each with its own client and schema:
+required). There are six write targets, each with its own client and schema:
 
 - **Curated book DB** (`notion/client.ts`, `NOTION_DATABASE_ID`, required) —
   update-only (never creates rows). Sets `Status`, backfills `Category` only when
@@ -239,6 +239,15 @@ required). There are five write targets, each with its own client and schema:
   supplies it) rather than dropping it — deduping against the same shared map, so
   the confirmation and lifecycle passes collapse onto that row. Book/game and
   fuzzy-matched-to-the-book-DB orders are excluded.
+- **Tech Accessories DB** (`TECH_ACCESSORIES_DATABASE_ID`) — when set, a purchase
+  that classifies as a *tech accessory* (charger/cable/hub/case/audio/storage/
+  input… — but not a whole device) is auto-added here instead of the general DB:
+  keyed by order # (a hidden column), self-categorized into the inventory's
+  buckets, and advanced along a delivery ladder (`Ordered → Shipped → Arriving →
+  Owned`, plus `Cancelled`) by the confirmation / shipping / lifecycle passes.
+  Manual rows (no order #) and a manual `Wishlist` are never touched; spend is
+  left blank until a confirmation supplies it (spend-only). "From now" is
+  inherent — the passes only see mail past their watermarks.
 - **Spend summary DB** (`SPEND_SUMMARY_DATABASE_ID`) — see below.
 
 All Notion reads/writes go through `withRetry` (see below). Notion responses are

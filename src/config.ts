@@ -63,6 +63,12 @@ const envSchema = z
     SPEND_SUMMARY_DATABASE_ID: z.string().min(1).optional(),
     // General "Purchases" Notion DB (non-book/game Amazon orders). Unset → off.
     GENERAL_DATABASE_ID: z.string().min(1).optional(),
+    // Tech Inventory "Accessories" Notion DB. When set, tech-accessory purchases
+    // (chargers, cables, hubs, cases, audio, storage, input…) are auto-added
+    // there — self-categorized, with a delivery ladder — instead of the general
+    // Purchases DB. Unset → off. (Priced creation uses the general
+    // order-confirmation pass, so enable GENERAL_DATABASE_ID too.)
+    TECH_ACCESSORIES_DATABASE_ID: z.string().min(1).optional(),
     // Gmail query for Amazon order confirmations (same query for every account).
     GENERAL_QUERY: z
       .string()
