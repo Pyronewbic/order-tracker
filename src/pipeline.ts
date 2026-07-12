@@ -27,8 +27,12 @@ import { currencyFor } from "./games/fx.js";
 import { parseAmount, toUSD } from "./money/fx.js";
 import type { SpendSummary } from "./summary/notion.js";
 import { parseOrderEmail, GENERAL_LLM_CATEGORIES } from "./general/parser.js";
-import type { GeneralNotionClient, GeneralUpdate } from "./general/notion.js";
-import { parseLifecycleEmail, planGeneralUpdate } from "./general/lifecycle.js";
+import type { GeneralNotionClient, GeneralUpdate, GeneralRow } from "./general/notion.js";
+import {
+  parseLifecycleEmail,
+  planGeneralUpdate,
+  type GeneralStatus,
+} from "./general/lifecycle.js";
 import { parseEbayOrder, parseEbayLifecycle } from "./general/ebay.js";
 import { classifyItem } from "./categorize.js";
 import { parseCharge } from "./subscriptions/parser.js";
@@ -58,6 +62,10 @@ export interface Deps {
 interface TickContext {
   rows: OrderRow[];
   rowsById: Map<string, OrderRow>;
+  /** General-purchases order map (order # → row), loaded once per tick and
+   * shared so the shipping fallback and the general passes dedup against one
+   * map (empty when the general DB is disabled). */
+  generalOrders: Map<string, GeneralRow>;
   /** Notion updates applied this tick (for the update-cap alarm). */
   updates: number;
   /** LLM calls made this tick across ALL accounts (for the per-tick cap). */
@@ -154,10 +162,21 @@ export async function runTick(
   const ctx: TickContext = {
     rows,
     rowsById: new Map(rows.map((r) => [r.pageId, r])),
+    generalOrders: new Map(),
     updates: 0,
     llmCalls: 0,
     llmCapAlerted: false,
   };
+
+  // Load the general order map once per tick, shared across accounts and passes:
+  // the shipping fallback (E3) and the three general passes upsert into it.
+  if (deps.general) {
+    try {
+      ctx.generalOrders = await deps.general.listOrders();
+    } catch (err) {
+      await log.error(`Failed to load general orders: ${String(err)}`);
+    }
+  }
 
   for (const [label, gmail] of gmailByLabel) {
     try {
@@ -273,6 +292,8 @@ async function runShipping(
 
     const row = resolveRow(label, update, ctx, state, cfg.MATCH_THRESHOLD);
     if (!row) {
+      // E3: capture an unmatched non-book item in the General DB before dropping.
+      if (await routeToGeneral(label, msg, update, deps, ctx)) continue;
       const ident =
         update.itemName ||
         `${update.carrier} ${update.trackingNumbers.join(", ") || "(no tracking #)"}`;
@@ -649,6 +670,98 @@ async function runGames(
   }
 }
 
+/** Amazon storefront from a shipment email's sender domain (for the merchant). */
+function amazonMerchant(from: string): string {
+  const f = from.toLowerCase();
+  if (f.includes("amazon.co.jp")) return "Amazon JP";
+  if (f.includes("amazon.in")) return "Amazon IN";
+  return "Amazon US";
+}
+
+/**
+ * E3: capture an unmatched, non-book shipping item in the General DB instead of
+ * dropping it as "No Notion match". Requires a stable Amazon order # (tracking-
+ * only mail can't be keyed and is still dropped); Book/Game/Digital are left to
+ * their domain DBs. Spend is left blank — a later order confirmation supplies
+ * the amount — so this stays spend-only and never invents a value. Deduped
+ * against the shared per-tick order map, so the confirmation and lifecycle
+ * passes collapse onto the same row. Returns true when it handled the message
+ * (created/advanced a row, or previewed one in dry-run), false to fall through
+ * to the normal no-match logging.
+ */
+async function routeToGeneral(
+  label: string,
+  msg: ParsedMessage,
+  update: ShipmentUpdate,
+  deps: Deps,
+  ctx: TickContext,
+): Promise<boolean> {
+  const { cfg, log, general } = deps;
+  if (!general || !update.orderId) return false;
+  if (
+    update.category === "Book" ||
+    update.category === "Game" ||
+    update.category === "Digital"
+  ) {
+    return false; // domain-owned, or no shipment to track
+  }
+
+  const category =
+    update.category === "Accessory"
+      ? "Accessories"
+      : update.category === "Electronics"
+        ? "Electronics"
+        : "Other";
+  const gStatus: GeneralStatus =
+    update.status === "Delivered"
+      ? "Delivered"
+      : update.status === "In Transit" || update.status === "Arriving Soon"
+        ? "Shipped"
+        : "Ordered";
+  const orderId = update.orderId;
+  const item = update.itemName || `Order ${orderId}`;
+  const deliveredMs = gStatus === "Delivered" ? msg.internalDateMs : undefined;
+  const existing = ctx.generalOrders.get(orderId);
+
+  if (cfg.DRY_RUN) {
+    await log.info(
+      `[${label}] [dry-run] would route order ${orderId} to General (${category}, ${gStatus}).`,
+    );
+    return true;
+  }
+
+  try {
+    if (existing) {
+      // Advance an already-known order along the general ladder; a noop/regress
+      // still counts as "handled" so it isn't re-logged as a no-match.
+      if (planGeneralUpdate(existing.status, gStatus) === "apply") {
+        await general.setStatus(existing.pageId, gStatus, deliveredMs);
+        existing.status = gStatus;
+        ctx.updates++;
+        await log.info(`[${label}] General order ${orderId} → ${gStatus} (from shipping).`);
+      }
+    } else {
+      const pageId = await general.createOrder(orderId, {
+        item,
+        merchant: amazonMerchant(msg.from),
+        category,
+        dateMs: msg.internalDateMs,
+        deliveredMs,
+        status: gStatus,
+      });
+      ctx.generalOrders.set(orderId, { pageId, orderId, status: gStatus });
+      ctx.updates++;
+      await log.info(
+        `[${label}] Routed order ${orderId} to General: "${item.slice(0, 40)}" (${category}, ${gStatus}).`,
+      );
+    }
+    return true;
+  } catch (err) {
+    await log.error(`[${label}] Failed routing order ${orderId} to General: ${String(err)}`);
+    return false;
+  }
+}
+
 // Map the deterministic item categories to the general taxonomy. Returns the
 // shared category if all items agree, else "Other". (Book/Game are filtered out
 // by the caller — they're owned by the domain DBs.)
@@ -717,10 +830,10 @@ async function runGeneral(
   const { general } = deps;
   if (!general) return;
 
-  // Load the order map once and share it across all three passes — each runs
-  // independently (its own query + watermark), and a confirmation created in an
-  // earlier pass is visible to the lifecycle/eBay passes within the same tick.
-  const existing = await general.listOrders();
+  // Shared per-tick order map (loaded once in runTick). All three passes and the
+  // shipping fallback dedup against it, so a row created by any of them is
+  // visible to the others within the same tick.
+  const existing = ctx.generalOrders;
   await runGeneralConfirmations(label, gmail, deps, ctx, existing, state);
   await runGeneralLifecycle(label, gmail, deps, existing, state);
   await runEbay(label, gmail, deps, ctx, existing, state);

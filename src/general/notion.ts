@@ -13,6 +13,8 @@ export interface GeneralUpdate {
   status?: string;
   dateMs?: number;
   items?: number;
+  /** Actual delivered-on date (epoch ms → date-only), set on →Delivered. */
+  deliveredMs?: number;
 }
 
 /** A general purchase row reduced to what we read (for upsert by order #). */
@@ -147,6 +149,7 @@ export class GeneralNotionClient {
     if (typeof u.usd === "number") p["Spend (USD)"] = { number: u.usd };
     if (typeof u.items === "number") p.Items = { number: u.items };
     if (u.dateMs) p.Date = { date: { start: isoDate(u.dateMs) } };
+    if (u.deliveredMs) p["Delivered on"] = { date: { start: isoDate(u.deliveredMs) } };
     if (includeStatus && u.status) p.Status = { select: { name: u.status } };
     return p;
   }
