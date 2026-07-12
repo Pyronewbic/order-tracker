@@ -264,6 +264,7 @@ the order-confirmation pass can supply the price:
 | `Currency` | Select (e.g. USD / INR) |
 | `Category` | Select — accessory buckets (Power / Cable / Connectivity / Storage / Case/Carry / Audio / Input / Capture / Display / Other) |
 | `Order link` | URL |
+| `ETA` | Date (delivery ETA parsed from shipment mail; drives the accessory Arrivals calendar) |
 | `Notes` | Text (rich text) |
 
 **Digital Games DB** — `GAMES_DATABASE_ID`:

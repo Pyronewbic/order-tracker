@@ -73,6 +73,8 @@ export interface AccessoryUpdate {
   orderUrl?: string;
   notes?: string;
   status?: AccessoryStatus;
+  /** Delivery ETA (epoch ms → date-only) for the accessory Arrivals calendar. */
+  etaMs?: number;
 }
 
 /** An accessory row reduced to what we read (only the auto-tracked ones). */
@@ -85,6 +87,7 @@ export interface AccessoryRow {
 const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({
   rich_text: [{ text: { content: s } }],
 });
+const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
 const rowSchema = z
   .object({
@@ -210,6 +213,7 @@ export class AccessoriesNotionClient {
     if (u.currency) p.Currency = { select: { name: u.currency } };
     if (u.category) p.Category = { select: { name: u.category } };
     if (u.orderUrl) p["Order link"] = { url: u.orderUrl };
+    if (u.etaMs) p.ETA = { date: { start: isoDate(u.etaMs) } };
     if (u.notes) p.Notes = rt(u.notes);
     if (includeStatus && u.status) p.Status = { select: { name: u.status } };
     return p;

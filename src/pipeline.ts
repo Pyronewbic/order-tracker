@@ -39,6 +39,7 @@ import {
   type AccessoriesNotionClient,
   type AccessoryRow,
   type AccessoryStatus,
+  type AccessoryUpdate,
 } from "./accessories/notion.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
@@ -794,6 +795,7 @@ async function upsertAccessory(
     dateMs: number;
     amount?: number;
     currency?: string;
+    etaMs?: number;
   },
 ): Promise<boolean> {
   const { cfg, log, accessories } = deps;
@@ -817,13 +819,16 @@ async function upsertAccessory(
         ctx.updates++;
         await log.info(`[${a.label}] Accessory ${a.orderId} → ${a.status}.`);
       }
-      // Enrich the price if this call has one (a confirmation arriving after the
-      // shipment that first created the row).
+      // Enrich the price (a confirmation arriving after the shipment that first
+      // created the row) and/or the ETA (from a shipment) if this call has them.
+      const enrich: AccessoryUpdate = {};
       if (typeof a.amount === "number") {
-        await accessories.updateAccessory(existing.pageId, {
-          amount: a.amount,
-          currency: a.currency,
-        });
+        enrich.amount = a.amount;
+        enrich.currency = a.currency;
+      }
+      if (a.etaMs) enrich.etaMs = a.etaMs;
+      if (Object.keys(enrich).length > 0) {
+        await accessories.updateAccessory(existing.pageId, enrich);
       }
     } else {
       const pageId = await accessories.createAccessory(a.orderId, {
@@ -831,6 +836,7 @@ async function upsertAccessory(
         category: a.category,
         amount: a.amount,
         currency: a.currency,
+        etaMs: a.etaMs,
         orderUrl: amazonOrderUrl(a.merchant, a.orderId),
         status: a.status,
         notes: `Auto-added from ${a.merchant} order ${a.orderId}.`,
@@ -895,6 +901,7 @@ async function routeToGeneral(
         status: accessoryStatusFromShipment(update.status),
         merchant: amazonMerchant(msg.from),
         dateMs: msg.internalDateMs,
+        etaMs: update.etaMs,
       });
       if (handled) return true;
     }
