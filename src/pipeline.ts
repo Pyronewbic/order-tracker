@@ -798,6 +798,7 @@ async function routeToGeneral(
         category,
         dateMs: msg.internalDateMs,
         deliveredMs,
+        etaMs: update.etaMs, // puts the routed item on the General delivery calendar
         status: gStatus,
       });
       ctx.generalOrders.set(orderId, { pageId, orderId, status: gStatus });

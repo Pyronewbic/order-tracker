@@ -15,6 +15,8 @@ export interface GeneralUpdate {
   items?: number;
   /** Actual delivered-on date (epoch ms → date-only), set on →Delivered. */
   deliveredMs?: number;
+  /** Delivery ETA (epoch ms → date-only) for the delivery calendar. */
+  etaMs?: number;
 }
 
 /** A general purchase row reduced to what we read (for upsert by order #). */
@@ -150,6 +152,7 @@ export class GeneralNotionClient {
     if (typeof u.items === "number") p.Items = { number: u.items };
     if (u.dateMs) p.Date = { date: { start: isoDate(u.dateMs) } };
     if (u.deliveredMs) p["Delivered on"] = { date: { start: isoDate(u.deliveredMs) } };
+    if (u.etaMs) p.ETA = { date: { start: isoDate(u.etaMs) } };
     if (includeStatus && u.status) p.Status = { select: { name: u.status } };
     return p;
   }
