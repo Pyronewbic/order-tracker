@@ -42,7 +42,8 @@ const OUTPUT_SCHEMA = {
   properties: {
     isShipping: {
       type: "boolean",
-      description: "True if this is an order/shipment status notification for a physical product.",
+      description:
+        "True if this is an order/shipment status notification for a physical product.",
     },
     status: {
       anyOf: [{ type: "string", enum: [...ORDER_STATUSES] }, { type: "null" }],
@@ -125,7 +126,11 @@ export class LlmParser {
    * the chosen category, or null if the model returns something off-list. One
    * bounded call; the caller gates *when* to call it (gap-only + per-tick cap).
    */
-  async categorizeGeneral(item: string, merchant: string, categories: string[]): Promise<string | null> {
+  async categorizeGeneral(
+    item: string,
+    merchant: string,
+    categories: string[],
+  ): Promise<string | null> {
     const schema = {
       type: "object",
       additionalProperties: false,
@@ -138,7 +143,7 @@ export class LlmParser {
       max_tokens: 40,
       system:
         "You categorize a purchased product into exactly one spending category. " +
-        "Pick the single best fit from the allowed list; use \"Other\" only if none clearly fit.",
+        'Pick the single best fit from the allowed list; use "Other" only if none clearly fit.',
       messages: [
         {
           role: "user",

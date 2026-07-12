@@ -63,6 +63,12 @@ const envSchema = z
     SPEND_SUMMARY_DATABASE_ID: z.string().min(1).optional(),
     // General "Purchases" Notion DB (non-book/game Amazon orders). Unset → off.
     GENERAL_DATABASE_ID: z.string().min(1).optional(),
+    // Tech Inventory "Accessories" Notion DB. When set, tech-accessory purchases
+    // (chargers, cables, hubs, cases, audio, storage, input…) are auto-added
+    // there — self-categorized, with a delivery ladder — instead of the general
+    // Purchases DB. Unset → off. (Priced creation uses the general
+    // order-confirmation pass, so enable GENERAL_DATABASE_ID too.)
+    TECH_ACCESSORIES_DATABASE_ID: z.string().min(1).optional(),
     // Gmail query for Amazon order confirmations (same query for every account).
     GENERAL_QUERY: z
       .string()
@@ -118,14 +124,11 @@ const envSchema = z
     // Hard cap on LLM calls per tick, summed across all accounts (cost bound).
     MAX_LLM_CALLS_PER_TICK: z.coerce.number().int().positive().default(10),
   })
-  .refine(
-    (env) => Boolean(env.TELEGRAM_BOT_TOKEN) === Boolean(env.TELEGRAM_CHAT_ID),
-    {
-      message:
-        "Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable Telegram, or neither to disable it.",
-      path: ["TELEGRAM_CHAT_ID"],
-    },
-  );
+  .refine((env) => Boolean(env.TELEGRAM_BOT_TOKEN) === Boolean(env.TELEGRAM_CHAT_ID), {
+    message:
+      "Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable Telegram, or neither to disable it.",
+    path: ["TELEGRAM_CHAT_ID"],
+  });
 
 export type Config = z.infer<typeof envSchema>;
 

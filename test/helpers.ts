@@ -18,7 +18,7 @@ export function msg(partial: Partial<ParsedMessage> = {}): ParsedMessage {
 
 /** Build a Notion OrderRow (only `book`/`status` usually matter to a test). */
 export function row(book: string, extra: Partial<OrderRow> = {}): OrderRow {
-  return { pageId: "p1", book, status: "", category: "", tags: [], ...extra };
+  return { pageId: "p1", book, status: "", category: "", tags: [], eta: "", ...extra };
 }
 
 /** Build a ShipmentUpdate for a given status. */

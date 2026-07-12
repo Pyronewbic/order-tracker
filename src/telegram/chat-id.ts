@@ -48,11 +48,7 @@ async function main(): Promise<void> {
     const chat = update.message?.chat;
     if (!chat) continue;
     const label =
-      chat.title ??
-      chat.username ??
-      chat.first_name ??
-      chat.type ??
-      "(unknown)";
+      chat.title ?? chat.username ?? chat.first_name ?? chat.type ?? "(unknown)";
     chats.set(chat.id, label);
   }
 

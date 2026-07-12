@@ -13,6 +13,10 @@ export interface GeneralUpdate {
   status?: string;
   dateMs?: number;
   items?: number;
+  /** Actual delivered-on date (epoch ms → date-only), set on →Delivered. */
+  deliveredMs?: number;
+  /** Delivery ETA (epoch ms → date-only) for the delivery calendar. */
+  etaMs?: number;
 }
 
 /** A general purchase row reduced to what we read (for upsert by order #). */
@@ -30,12 +34,17 @@ const rowSchema = z
     id: z.string(),
     properties: z.object({
       "Order #": txtVal.optional(),
-      Status: z.object({ select: z.object({ name: z.string() }).nullable() }).passthrough().optional(),
+      Status: z
+        .object({ select: z.object({ name: z.string() }).nullable() })
+        .passthrough()
+        .optional(),
     }),
   })
   .passthrough();
 
-const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({ rich_text: [{ text: { content: s } }] });
+const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({
+  rich_text: [{ text: { content: s } }],
+});
 const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
 /**
@@ -55,7 +64,9 @@ export class GeneralNotionClient {
 
   async verifyAccess(): Promise<void> {
     try {
-      await withRetry(() => this.notion.databases.retrieve({ database_id: this.databaseId }));
+      await withRetry(() =>
+        this.notion.databases.retrieve({ database_id: this.databaseId }),
+      );
     } catch (err) {
       throw new Error(
         `Cannot access general-purchases database ${this.databaseId}: ${String(err)}. ` +
@@ -70,7 +81,11 @@ export class GeneralNotionClient {
     let cursor: string | undefined;
     do {
       const res = await withRetry(() =>
-        this.notion.databases.query({ database_id: this.databaseId, start_cursor: cursor, page_size: 100 }),
+        this.notion.databases.query({
+          database_id: this.databaseId,
+          start_cursor: cursor,
+          page_size: 100,
+        }),
       );
       for (const raw of res.results) {
         const parsed = rowSchema.safeParse(raw);
@@ -108,15 +123,19 @@ export class GeneralNotionClient {
 
   /**
    * Advance an order's lifecycle Status (Shipped/Delivered/Cancelled/Returned).
-   * Unknown select options are auto-created by the REST API on first write.
+   * Unknown select options are auto-created by the REST API on first write. On a
+   * →Delivered transition, `deliveredMs` (the delivering email's date) is stamped
+   * on the "Delivered on" column so actual arrival is recorded alongside status.
    */
-  async setStatus(pageId: string, status: string): Promise<void> {
+  async setStatus(pageId: string, status: string, deliveredMs?: number): Promise<void> {
+    const properties: Record<string, unknown> = { Status: { select: { name: status } } };
+    if (deliveredMs && status === "Delivered") {
+      properties["Delivered on"] = { date: { start: isoDate(deliveredMs) } };
+    }
     await withRetry(() =>
       this.notion.pages.update({
         page_id: pageId,
-        properties: { Status: { select: { name: status } } } as Parameters<
-          Client["pages"]["update"]
-        >[0]["properties"],
+        properties: properties as Parameters<Client["pages"]["update"]>[0]["properties"],
       }),
     );
   }
@@ -133,7 +152,10 @@ export class GeneralNotionClient {
     );
   }
 
-  private buildProperties(u: GeneralUpdate, includeStatus: boolean): Record<string, unknown> {
+  private buildProperties(
+    u: GeneralUpdate,
+    includeStatus: boolean,
+  ): Record<string, unknown> {
     const p: Record<string, unknown> = {};
     if (u.item) p.Item = { title: [{ text: { content: u.item } }] };
     if (u.merchant) p.Merchant = { select: { name: u.merchant } };
@@ -143,6 +165,8 @@ export class GeneralNotionClient {
     if (typeof u.usd === "number") p["Spend (USD)"] = { number: u.usd };
     if (typeof u.items === "number") p.Items = { number: u.items };
     if (u.dateMs) p.Date = { date: { start: isoDate(u.dateMs) } };
+    if (u.deliveredMs) p["Delivered on"] = { date: { start: isoDate(u.deliveredMs) } };
+    if (u.etaMs) p.ETA = { date: { start: isoDate(u.etaMs) } };
     if (includeStatus && u.status) p.Status = { select: { name: u.status } };
     return p;
   }

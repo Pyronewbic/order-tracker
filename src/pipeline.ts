@@ -1,10 +1,7 @@
 import type { RuntimeConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { accountState, type State } from "./state.js";
-import {
-  GmailClient,
-  type ParsedMessage,
-} from "./gmail/client.js";
+import { GmailClient, type ParsedMessage } from "./gmail/client.js";
 import { buildUpdate, parseMessage, type ShipmentUpdate } from "./gmail/parser.js";
 import type { LlmClassification, LlmParser } from "./gmail/llm-parser.js";
 import { NotionClient, type OrderRow } from "./notion/client.js";
@@ -27,10 +24,23 @@ import { currencyFor } from "./games/fx.js";
 import { parseAmount, toUSD } from "./money/fx.js";
 import type { SpendSummary } from "./summary/notion.js";
 import { parseOrderEmail, GENERAL_LLM_CATEGORIES } from "./general/parser.js";
-import type { GeneralNotionClient, GeneralUpdate } from "./general/notion.js";
-import { parseLifecycleEmail, planGeneralUpdate } from "./general/lifecycle.js";
+import type { GeneralNotionClient, GeneralUpdate, GeneralRow } from "./general/notion.js";
+import {
+  parseLifecycleEmail,
+  planGeneralUpdate,
+  type GeneralStatus,
+} from "./general/lifecycle.js";
 import { parseEbayOrder, parseEbayLifecycle } from "./general/ebay.js";
-import { classifyItem } from "./categorize.js";
+import { classifyItem, techAccessoryCategory } from "./categorize.js";
+import {
+  accessoryStatusFromGeneral,
+  accessoryStatusFromShipment,
+  planAccessoryUpdate,
+  type AccessoriesNotionClient,
+  type AccessoryRow,
+  type AccessoryStatus,
+  type AccessoryUpdate,
+} from "./accessories/notion.js";
 import { parseCharge } from "./subscriptions/parser.js";
 import { classifyCharge } from "./subscriptions/tracker.js";
 import type { Notifier } from "./telegram/client.js";
@@ -52,12 +62,21 @@ export interface Deps {
   summary: SpendSummary | null;
   /** Optional general-purchases tracking; null when disabled. */
   general: GeneralNotionClient | null;
+  /** Optional tech-accessory tracking (Tech Inventory Accessories DB); null off. */
+  accessories: AccessoriesNotionClient | null;
 }
 
 /** Mutable per-tick accumulators: shared Notion rows + cross-account counters. */
 interface TickContext {
   rows: OrderRow[];
   rowsById: Map<string, OrderRow>;
+  /** General-purchases order map (order # → row), loaded once per tick and
+   * shared so the shipping fallback and the general passes dedup against one
+   * map (empty when the general DB is disabled). */
+  generalOrders: Map<string, GeneralRow>;
+  /** Tech-accessory order map (order # → row), loaded once per tick; shared so
+   * the shipping/confirmation/lifecycle passes dedup (empty when off). */
+  accessoryOrders: Map<string, AccessoryRow>;
   /** Notion updates applied this tick (for the update-cap alarm). */
   updates: number;
   /** LLM calls made this tick across ALL accounts (for the per-tick cap). */
@@ -137,6 +156,33 @@ export function planUpdate(
   return statusRank(next) > statusRank(cur) ? "apply" : "regress";
 }
 
+// Accounts we've already alerted about an auth failure, so the daily-recurring
+// invalid_grant doesn't fire a Telegram ping every tick. Cleared per account on
+// its next successful poll. Module-scoped so it persists across ticks.
+const authAlerted = new Set<string>();
+
+/** A Gmail-auth failure (expired/revoked refresh token), vs a transient error. */
+function isAuthError(err: unknown): boolean {
+  return /invalid_grant|invalid_client|unauthorized|\b401\b/i.test(String(err));
+}
+
+/** Alert once (log + Telegram) that an account's Gmail token needs re-auth. */
+async function alertAuthOnce(label: string, err: unknown, deps: Deps): Promise<void> {
+  const { log, notifier } = deps;
+  if (authAlerted.has(label)) {
+    await log.error(`[${label}] Gmail auth still failing; account skipped this tick.`);
+    return;
+  }
+  authAlerted.add(label);
+  await log.error(
+    `[${label}] Gmail auth failed (token expired or revoked): ${String(err)}`,
+  );
+  await notifier.notify(
+    `🔒 Order tracker: Gmail auth failed for "${label}". ` +
+      `Re-authorize with \`npm run auth -- ${label}\`.`,
+  );
+}
+
 /**
  * Run one poll across all accounts: fetch Notion rows once, then process each
  * account's shipping + subscription jobs sequentially with per-job failure
@@ -154,15 +200,42 @@ export async function runTick(
   const ctx: TickContext = {
     rows,
     rowsById: new Map(rows.map((r) => [r.pageId, r])),
+    generalOrders: new Map(),
+    accessoryOrders: new Map(),
     updates: 0,
     llmCalls: 0,
     llmCapAlerted: false,
   };
 
+  // Load the general order map once per tick, shared across accounts and passes:
+  // the shipping fallback (E3) and the three general passes upsert into it.
+  if (deps.general) {
+    try {
+      ctx.generalOrders = await deps.general.listOrders();
+    } catch (err) {
+      await log.error(`Failed to load general orders: ${String(err)}`);
+    }
+  }
+  // Same for the tech-accessory order map (Tech Inventory Accessories DB).
+  if (deps.accessories) {
+    try {
+      ctx.accessoryOrders = await deps.accessories.listByOrder();
+    } catch (err) {
+      await log.error(`Failed to load accessories: ${String(err)}`);
+    }
+  }
+
   for (const [label, gmail] of gmailByLabel) {
     try {
       await runShipping(label, gmail, deps, ctx, state);
+      authAlerted.delete(label); // a successful poll clears any prior auth alert
     } catch (err) {
+      if (isAuthError(err)) {
+        // A dead/expired token fails every job for this account identically, and
+        // silently ("0 updates"). Alert once and skip the rest of its jobs.
+        await alertAuthOnce(label, err, deps);
+        continue;
+      }
       await log.error(`[${label}] shipping job failed: ${String(err)}`);
     }
     try {
@@ -237,15 +310,31 @@ async function runShipping(
   await log.info(`[${label}] Processing ${messages.length} shipping message(s).`);
 
   for (const msg of messages) {
+    let update = parseMessage(msg);
+
+    // Cap-aware deferral: a message that needs the LLM merely to be *classified*
+    // (the regex found no status) is lost if we advance the watermark past it
+    // while the per-tick LLM cap is spent. When the cap is exhausted, stop here
+    // WITHOUT advancing — the backlog resumes next tick over a few ticks. (Only
+    // the status-gap case; a classification-only gap still records the status,
+    // so losing its category to the cap is acceptable.)
+    if (
+      !update &&
+      deps.llm &&
+      !cfg.DRY_RUN &&
+      ctx.llmCalls >= cfg.MAX_LLM_CALLS_PER_TICK
+    ) {
+      await log.warn(
+        `[${label}] LLM cap reached; deferring "${msg.subject}" and the rest to next tick.`,
+      );
+      break;
+    }
+
     // Advance the watermark BEFORE any branch, skip, LLM call, or failure, so a
     // message is processed at most once ever — including negative LLM verdicts,
     // which must never trigger a second paid call on a later tick.
-    watermark.lastProcessedMs = Math.max(
-      watermark.lastProcessedMs,
-      msg.internalDateMs,
-    );
+    watermark.lastProcessedMs = Math.max(watermark.lastProcessedMs, msg.internalDateMs);
 
-    let update = parseMessage(msg);
     if (!update) {
       // Status gap: the regex couldn't classify this email — ask the LLM.
       if (!deps.llm) {
@@ -273,6 +362,8 @@ async function runShipping(
 
     const row = resolveRow(label, update, ctx, state, cfg.MATCH_THRESHOLD);
     if (!row) {
+      // E3: capture an unmatched non-book item in the General DB before dropping.
+      if (await routeToGeneral(label, msg, update, deps, ctx)) continue;
       const ident =
         update.itemName ||
         `${update.carrier} ${update.trackingNumbers.join(", ") || "(no tracking #)"}`;
@@ -281,7 +372,9 @@ async function runShipping(
       if (update.category === "Digital") {
         await log.info(`[${label}] Digital order, not tracked: "${msg.subject}".`);
       } else {
-        await log.warn(`[${label}] No Notion match for ${ident} (subject: "${msg.subject}").`);
+        await log.warn(
+          `[${label}] No Notion match for ${ident} (subject: "${msg.subject}").`,
+        );
       }
       continue;
     }
@@ -356,26 +449,40 @@ async function applyShipmentUpdate(
   const categoryToSet = update.category && !row.category ? update.category : undefined;
   const newTags = update.tags.filter((t) => !row.tags.includes(t));
   const tagsToSet = newTags.length > 0 ? [...row.tags, ...newTags] : undefined;
+  // ETA: write a parsed ETA only when the row has none — an existing/manual ETA
+  // is authoritative and never overwritten. Never on a Delivered email.
+  const etaToSet =
+    update.etaMs && !row.eta && update.status !== "Delivered" ? update.etaMs : undefined;
+  // Delivered-on: stamp the email's date on the transition into Delivered.
+  const deliveredToSet =
+    update.status === "Delivered" && decision === "apply"
+      ? update.deliveredMs
+      : undefined;
+  const nothingElse = !categoryToSet && !tagsToSet && !etaToSet && !deliveredToSet;
 
   if (decision === "regress") {
     await log.warn(
       `[${label}] Skipped regression for "${row.book}": ${row.status || "(unset)"} ✗→ ${update.status}.`,
     );
-  } else if (decision === "apply" && !statusWritable && !categoryToSet && !tagsToSet) {
+  } else if (decision === "apply" && !statusWritable && nothingElse) {
     await log.info(
       `[${label}] No DB status for "${update.status}"; left "${row.book}" unchanged.`,
     );
-  } else if (decision === "noop" && !categoryToSet && !tagsToSet) {
+  } else if (decision === "noop" && nothingElse) {
     await log.info(`[${label}] No change: "${row.book}" already ${update.status}.`);
   }
 
-  if (!willSetStatus && !categoryToSet && !tagsToSet) return; // nothing to write
+  if (!willSetStatus && nothingElse) return; // nothing to write
+
+  const isoDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
   if (cfg.DRY_RUN) {
     const parts: string[] = [];
     if (willSetStatus) parts.push(`status → ${update.status}`);
     if (categoryToSet) parts.push(`category → ${categoryToSet}`);
     if (tagsToSet) parts.push(`+tags [${newTags.join(", ")}]`);
+    if (etaToSet) parts.push(`ETA → ${isoDay(etaToSet)}`);
+    if (deliveredToSet) parts.push(`delivered → ${isoDay(deliveredToSet)}`);
     await log.info(`[${label}] [dry-run] would set "${row.book}": ${parts.join(", ")}.`);
     return;
   }
@@ -385,6 +492,8 @@ async function applyShipmentUpdate(
       status: willSetStatus ? update.status : undefined,
       category: categoryToSet,
       tags: tagsToSet,
+      etaMs: etaToSet,
+      deliveredMs: deliveredToSet,
     });
     ctx.updates++;
     if (willSetStatus) {
@@ -396,11 +505,15 @@ async function applyShipmentUpdate(
     }
     if (categoryToSet) row.category = categoryToSet;
     if (tagsToSet) row.tags = tagsToSet;
+    if (etaToSet) row.eta = isoDay(etaToSet); // authoritative once set, this tick
     if (!willSetStatus) {
       const bits: string[] = [];
       if (categoryToSet) bits.push(`category ${categoryToSet}`);
       if (newTags.length) bits.push(`tags [${newTags.join(", ")}]`);
-      if (bits.length) await log.info(`[${label}] Tagged "${row.book}": ${bits.join("; ")}.`);
+      if (etaToSet) bits.push(`ETA ${isoDay(etaToSet)}`);
+      if (deliveredToSet) bits.push(`delivered ${isoDay(deliveredToSet)}`);
+      if (bits.length)
+        await log.info(`[${label}] Updated "${row.book}": ${bits.join("; ")}.`);
     }
   } catch (err) {
     await log.error(`[${label}] Failed updating "${row.book}": ${String(err)}`);
@@ -436,7 +549,9 @@ async function callLlm(
   if (ctx.llmCalls >= cfg.MAX_LLM_CALLS_PER_TICK) {
     if (!ctx.llmCapAlerted) {
       ctx.llmCapAlerted = true;
-      await log.warn(`LLM call cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick) reached; skipping further LLM calls this tick.`);
+      await log.warn(
+        `LLM call cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick) reached; skipping further LLM calls this tick.`,
+      );
       await notifier.notify(
         `⚠️ Order tracker hit the LLM cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick). ` +
           `Remaining unclassified mail was skipped — check your shipping query.`,
@@ -512,7 +627,9 @@ async function runForwarder(
     const ev = parseForwarderEmail(msg);
     if (!ev) continue;
     if (ev.kind === "outbound") {
-      await log.info(`[${label}] Forwarder shipment left the warehouse: "${msg.subject}".`);
+      await log.info(
+        `[${label}] Forwarder shipment left the warehouse: "${msg.subject}".`,
+      );
       continue;
     }
 
@@ -521,7 +638,9 @@ async function runForwarder(
     const existing = packages.get(code);
 
     if (existing && isTerminalPackageStatus(existing.status)) {
-      await log.info(`[${label}] Package ${code} already ${existing.status}; leaving as-is.`);
+      await log.info(
+        `[${label}] Package ${code} already ${existing.status}; leaving as-is.`,
+      );
       continue;
     }
 
@@ -545,7 +664,9 @@ async function runForwarder(
         await log.info(`[${label}] New forwarder package ${code}.`);
       }
     } catch (err) {
-      await log.error(`[${label}] Failed upserting forwarder package ${code}: ${String(err)}`);
+      await log.error(
+        `[${label}] Failed upserting forwarder package ${code}: ${String(err)}`,
+      );
     }
   }
 }
@@ -598,7 +719,9 @@ async function runGames(
 
     const amount = ev.price ? parseAmount(ev.price) : null;
     const usd =
-      amount != null ? await toUSD(amount, currencyFor(ev.platform), ev.receivedMs) : null;
+      amount != null
+        ? await toUSD(amount, currencyFor(ev.platform), ev.receivedMs)
+        : null;
     const update: GameUpdate = {
       status: ev.status,
       platform: ev.platform,
@@ -620,15 +743,237 @@ async function runGames(
       if (existing) {
         if (existing.status === ev.status) delete update.status;
         await games.updateGame(existing.pageId, update);
-        await log.info(`[${label}] Updated game "${ev.title}" (${ev.platform}, ${ev.status}).`);
+        await log.info(
+          `[${label}] Updated game "${ev.title}" (${ev.platform}, ${ev.status}).`,
+        );
       } else {
         const pageId = await games.createGame(ev.title, update);
         rows.set(key, { pageId, key, status: ev.status });
-        await log.info(`[${label}] New game "${ev.title}" (${ev.platform}, ${ev.status}).`);
+        await log.info(
+          `[${label}] New game "${ev.title}" (${ev.platform}, ${ev.status}).`,
+        );
       }
     } catch (err) {
       await log.error(`[${label}] Failed upserting game "${ev.title}": ${String(err)}`);
     }
+  }
+}
+
+/** Amazon storefront from a shipment email's sender domain (for the merchant). */
+function amazonMerchant(from: string): string {
+  const f = from.toLowerCase();
+  if (f.includes("amazon.co.jp")) return "Amazon JP";
+  if (f.includes("amazon.in")) return "Amazon IN";
+  return "Amazon US";
+}
+
+/** Amazon order-details URL for a storefront + order number. */
+function amazonOrderUrl(merchant: string, orderId: string): string {
+  const tld =
+    merchant === "Amazon IN" ? "in" : merchant === "Amazon JP" ? "co.jp" : "com";
+  return `https://www.amazon.${tld}/gp/css/order-details?orderID=${orderId}`;
+}
+
+/**
+ * Auto-add or advance a tech accessory in the Tech Inventory Accessories DB.
+ * Spend-only (amount comes from an order confirmation; a shipment carries none),
+ * deduped on the shared per-tick accessory map, and it never steals an order the
+ * general DB already owns (avoids a duplicate during the changeover). "From now"
+ * is inherent: the calling pass only sees mail newer than its watermark. Returns
+ * true when it handled the order (created / advanced / enriched, or dry-run).
+ */
+async function upsertAccessory(
+  deps: Deps,
+  ctx: TickContext,
+  a: {
+    label: string;
+    orderId: string;
+    name: string;
+    category: string;
+    status: AccessoryStatus;
+    merchant: string;
+    dateMs: number;
+    amount?: number;
+    currency?: string;
+    etaMs?: number;
+  },
+): Promise<boolean> {
+  const { cfg, log, accessories } = deps;
+  if (!accessories) return false;
+  if (ctx.generalOrders.has(a.orderId)) return false; // already owned by general DB
+
+  const existing = ctx.accessoryOrders.get(a.orderId);
+
+  if (cfg.DRY_RUN) {
+    await log.info(
+      `[${a.label}] [dry-run] would ${existing ? "advance" : "add"} accessory ${a.orderId} → ${a.status} (${a.category}).`,
+    );
+    return true;
+  }
+
+  try {
+    if (existing) {
+      if (planAccessoryUpdate(existing.status, a.status) === "apply") {
+        await accessories.setStatus(existing.pageId, a.status);
+        existing.status = a.status;
+        ctx.updates++;
+        await log.info(`[${a.label}] Accessory ${a.orderId} → ${a.status}.`);
+      }
+      // Enrich the price (a confirmation arriving after the shipment that first
+      // created the row) and/or the ETA (from a shipment) if this call has them.
+      const enrich: AccessoryUpdate = {};
+      if (typeof a.amount === "number") {
+        enrich.amount = a.amount;
+        enrich.currency = a.currency;
+      }
+      if (a.etaMs) enrich.etaMs = a.etaMs;
+      if (Object.keys(enrich).length > 0) {
+        await accessories.updateAccessory(existing.pageId, enrich);
+      }
+    } else {
+      const pageId = await accessories.createAccessory(a.orderId, {
+        name: a.name,
+        category: a.category,
+        amount: a.amount,
+        currency: a.currency,
+        etaMs: a.etaMs,
+        orderUrl: amazonOrderUrl(a.merchant, a.orderId),
+        status: a.status,
+        notes: `Auto-added from ${a.merchant} order ${a.orderId}.`,
+      });
+      ctx.accessoryOrders.set(a.orderId, {
+        pageId,
+        orderId: a.orderId,
+        status: a.status,
+      });
+      ctx.updates++;
+      await log.info(
+        `[${a.label}] Added accessory ${a.orderId}: "${a.name.slice(0, 40)}" (${a.category}, ${a.status}).`,
+      );
+    }
+    return true;
+  } catch (err) {
+    await log.error(
+      `[${a.label}] Failed upserting accessory ${a.orderId}: ${String(err)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * E3: capture an unmatched, non-book shipping item in the General DB instead of
+ * dropping it as "No Notion match". Requires a stable Amazon order # (tracking-
+ * only mail can't be keyed and is still dropped); Book/Game/Digital are left to
+ * their domain DBs. Spend is left blank — a later order confirmation supplies
+ * the amount — so this stays spend-only and never invents a value. Deduped
+ * against the shared per-tick order map, so the confirmation and lifecycle
+ * passes collapse onto the same row. Returns true when it handled the message
+ * (created/advanced a row, or previewed one in dry-run), false to fall through
+ * to the normal no-match logging.
+ */
+async function routeToGeneral(
+  label: string,
+  msg: ParsedMessage,
+  update: ShipmentUpdate,
+  deps: Deps,
+  ctx: TickContext,
+): Promise<boolean> {
+  const { cfg, log, general } = deps;
+  if (!update.orderId) return false;
+
+  // Tech accessories go to the Tech Inventory Accessories DB, not the general DB.
+  // Advance one already tracked there, or create a new one from a titled shipment.
+  if (deps.accessories) {
+    const known = ctx.accessoryOrders.has(update.orderId);
+    const cat = update.itemName
+      ? techAccessoryCategory({
+          itemName: update.itemName,
+          from: msg.from,
+          subject: msg.subject,
+        })
+      : null;
+    if (known || cat) {
+      const handled = await upsertAccessory(deps, ctx, {
+        label,
+        orderId: update.orderId,
+        name: update.itemName || `Order ${update.orderId}`,
+        category: cat ?? "Other",
+        status: accessoryStatusFromShipment(update.status),
+        merchant: amazonMerchant(msg.from),
+        dateMs: msg.internalDateMs,
+        etaMs: update.etaMs,
+      });
+      if (handled) return true;
+    }
+  }
+
+  if (!general) return false;
+  if (
+    update.category === "Book" ||
+    update.category === "Game" ||
+    update.category === "Digital"
+  ) {
+    return false; // domain-owned, or no shipment to track
+  }
+
+  const category =
+    update.category === "Accessory"
+      ? "Accessories"
+      : update.category === "Electronics"
+        ? "Electronics"
+        : "Other";
+  const gStatus: GeneralStatus =
+    update.status === "Delivered"
+      ? "Delivered"
+      : update.status === "In Transit" || update.status === "Arriving Soon"
+        ? "Shipped"
+        : "Ordered";
+  const orderId = update.orderId;
+  const item = update.itemName || `Order ${orderId}`;
+  const deliveredMs = gStatus === "Delivered" ? msg.internalDateMs : undefined;
+  const existing = ctx.generalOrders.get(orderId);
+
+  if (cfg.DRY_RUN) {
+    await log.info(
+      `[${label}] [dry-run] would route order ${orderId} to General (${category}, ${gStatus}).`,
+    );
+    return true;
+  }
+
+  try {
+    if (existing) {
+      // Advance an already-known order along the general ladder; a noop/regress
+      // still counts as "handled" so it isn't re-logged as a no-match.
+      if (planGeneralUpdate(existing.status, gStatus) === "apply") {
+        await general.setStatus(existing.pageId, gStatus, deliveredMs);
+        existing.status = gStatus;
+        ctx.updates++;
+        await log.info(
+          `[${label}] General order ${orderId} → ${gStatus} (from shipping).`,
+        );
+      }
+    } else {
+      const pageId = await general.createOrder(orderId, {
+        item,
+        merchant: amazonMerchant(msg.from),
+        category,
+        dateMs: msg.internalDateMs,
+        deliveredMs,
+        etaMs: update.etaMs, // puts the routed item on the General delivery calendar
+        status: gStatus,
+      });
+      ctx.generalOrders.set(orderId, { pageId, orderId, status: gStatus });
+      ctx.updates++;
+      await log.info(
+        `[${label}] Routed order ${orderId} to General: "${item.slice(0, 40)}" (${category}, ${gStatus}).`,
+      );
+    }
+    return true;
+  } catch (err) {
+    await log.error(
+      `[${label}] Failed routing order ${orderId} to General: ${String(err)}`,
+    );
+    return false;
   }
 }
 
@@ -672,10 +1017,14 @@ async function categorizeOrder(
   ) {
     ctx.llmCalls++;
     try {
-      const llmCat = await deps.llm.categorizeGeneral(dominantItem, merchant, [...GENERAL_LLM_CATEGORIES]);
+      const llmCat = await deps.llm.categorizeGeneral(dominantItem, merchant, [
+        ...GENERAL_LLM_CATEGORIES,
+      ]);
       if (llmCat) category = llmCat;
     } catch (err) {
-      await deps.log.warn(`LLM categorize failed for "${dominantItem.slice(0, 40)}": ${String(err)}`);
+      await deps.log.warn(
+        `LLM categorize failed for "${dominantItem.slice(0, 40)}": ${String(err)}`,
+      );
     }
   }
   return category === "Other" ? fallback : category;
@@ -700,12 +1049,12 @@ async function runGeneral(
   const { general } = deps;
   if (!general) return;
 
-  // Load the order map once and share it across all three passes — each runs
-  // independently (its own query + watermark), and a confirmation created in an
-  // earlier pass is visible to the lifecycle/eBay passes within the same tick.
-  const existing = await general.listOrders();
+  // Shared per-tick order map (loaded once in runTick). All three passes and the
+  // shipping fallback dedup against it, so a row created by any of them is
+  // visible to the others within the same tick.
+  const existing = ctx.generalOrders;
   await runGeneralConfirmations(label, gmail, deps, ctx, existing, state);
-  await runGeneralLifecycle(label, gmail, deps, existing, state);
+  await runGeneralLifecycle(label, gmail, deps, ctx, existing, state);
   await runEbay(label, gmail, deps, ctx, existing, state);
 }
 
@@ -727,7 +1076,13 @@ async function runGeneralConfirmations(
   if (!general) return;
 
   const watermark = accountState(state, label);
-  const messages = await fetchNewMessages(gmail, cfg.GENERAL_QUERY, watermark.generalLastMs, log, label);
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.GENERAL_QUERY,
+    watermark.generalLastMs,
+    log,
+    label,
+  );
   if (messages.length === 0) {
     await log.info(`[${label}] No new purchase messages.`);
     return;
@@ -748,9 +1103,46 @@ async function runGeneralConfirmations(
         continue;
       }
 
-      const category = await categorizeOrder(cats, o.dominantItem, o.merchant, "Other", deps, ctx);
+      // Tech accessories go to the Tech Inventory Accessories DB (with price),
+      // not the general Purchases DB.
+      if (deps.accessories) {
+        const techCat = techAccessoryCategory({
+          itemName: o.dominantItem,
+          from: msg.from,
+          subject: msg.subject,
+        });
+        if (
+          techCat &&
+          (await upsertAccessory(deps, ctx, {
+            label,
+            orderId: o.orderId,
+            name:
+              o.itemCount > 1
+                ? `${o.dominantItem} (+${o.itemCount - 1})`
+                : o.dominantItem,
+            category: techCat,
+            status: "Ordered",
+            merchant: o.merchant,
+            dateMs: o.dateMs,
+            amount: o.total,
+            currency: o.currency,
+          }))
+        ) {
+          continue; // routed to Accessories — skip the general DB
+        }
+      }
+
+      const category = await categorizeOrder(
+        cats,
+        o.dominantItem,
+        o.merchant,
+        "Other",
+        deps,
+        ctx,
+      );
       const usd = await toUSD(o.total, o.currency, o.dateMs);
-      const label_ = o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem;
+      const label_ =
+        o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem;
       const update: GeneralUpdate = {
         item: label_,
         merchant: o.merchant,
@@ -775,9 +1167,14 @@ async function runGeneralConfirmations(
         if (exists) {
           await general.updateOrder(exists.pageId, update);
         } else {
-          const pageId = await general.createOrder(o.orderId, { ...update, status: "Ordered" });
+          const pageId = await general.createOrder(o.orderId, {
+            ...update,
+            status: "Ordered",
+          });
           existing.set(o.orderId, { pageId, orderId: o.orderId, status: "Ordered" });
-          await log.info(`[${label}] New purchase ${o.orderId}: "${o.dominantItem.slice(0, 40)}" (${category}).`);
+          await log.info(
+            `[${label}] New purchase ${o.orderId}: "${o.dominantItem.slice(0, 40)}" (${category}).`,
+          );
         }
       } catch (err) {
         await log.error(`[${label}] Failed upserting order ${o.orderId}: ${String(err)}`);
@@ -807,7 +1204,13 @@ async function runEbay(
   if (!general) return;
 
   const watermark = accountState(state, label);
-  const messages = await fetchNewMessages(gmail, cfg.EBAY_QUERY, watermark.ebayLastMs, log, label);
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.EBAY_QUERY,
+    watermark.ebayLastMs,
+    log,
+    label,
+  );
   if (messages.length === 0) {
     await log.info(`[${label}] No new eBay messages.`);
     return;
@@ -830,7 +1233,14 @@ async function runEbay(
         const cats = order.itemNames.map((n) =>
           classifyItem({ itemName: n, from: msg.from, subject: msg.subject }),
         );
-        const category = await categorizeOrder(cats, order.dominantItem, "eBay", "Collectibles", deps, ctx);
+        const category = await categorizeOrder(
+          cats,
+          order.dominantItem,
+          "eBay",
+          "Collectibles",
+          deps,
+          ctx,
+        );
         const usd = await toUSD(order.total, order.currency, order.dateMs);
         const pageId = await general.createOrder(order.orderId, {
           item: order.dominantItem,
@@ -843,10 +1253,18 @@ async function runEbay(
           items: order.itemCount,
           status: "Ordered",
         });
-        existing.set(order.orderId, { pageId, orderId: order.orderId, status: "Ordered" });
-        await log.info(`[${label}] New eBay order ${order.orderId}: "${order.dominantItem.slice(0, 40)}".`);
+        existing.set(order.orderId, {
+          pageId,
+          orderId: order.orderId,
+          status: "Ordered",
+        });
+        await log.info(
+          `[${label}] New eBay order ${order.orderId}: "${order.dominantItem.slice(0, 40)}".`,
+        );
       } catch (err) {
-        await log.error(`[${label}] Failed creating eBay order ${order.orderId}: ${String(err)}`);
+        await log.error(
+          `[${label}] Failed creating eBay order ${order.orderId}: ${String(err)}`,
+        );
       }
       continue;
     }
@@ -860,19 +1278,29 @@ async function runEbay(
     const decision = planGeneralUpdate(row.status, ev.status);
     if (decision === "noop") continue;
     if (decision === "regress") {
-      await log.info(`[${label}] eBay order ${ev.orderId}: ${row.status || "(unset)"} ✗→ ${ev.status} (skipped).`);
+      await log.info(
+        `[${label}] eBay order ${ev.orderId}: ${row.status || "(unset)"} ✗→ ${ev.status} (skipped).`,
+      );
       continue;
     }
     if (cfg.DRY_RUN) {
-      await log.info(`[${label}] [dry-run] would set eBay order ${ev.orderId} → ${ev.status}.`);
+      await log.info(
+        `[${label}] [dry-run] would set eBay order ${ev.orderId} → ${ev.status}.`,
+      );
       continue;
     }
     try {
-      await general.setStatus(row.pageId, ev.status);
+      await general.setStatus(
+        row.pageId,
+        ev.status,
+        ev.status === "Delivered" ? msg.internalDateMs : undefined,
+      );
       row.status = ev.status;
       await log.info(`[${label}] eBay order ${ev.orderId} → ${ev.status}.`);
     } catch (err) {
-      await log.error(`[${label}] Failed advancing eBay order ${ev.orderId}: ${String(err)}`);
+      await log.error(
+        `[${label}] Failed advancing eBay order ${ev.orderId}: ${String(err)}`,
+      );
     }
   }
 }
@@ -889,6 +1317,7 @@ async function runGeneralLifecycle(
   label: string,
   gmail: GmailClient,
   deps: Deps,
+  ctx: TickContext,
   existing: Map<string, { pageId: string; orderId: string; status: string }>,
   state: State,
 ): Promise<void> {
@@ -918,6 +1347,22 @@ async function runGeneralLifecycle(
     const ev = parseLifecycleEmail(msg);
     if (!ev) continue;
 
+    // A tech accessory tracked in the Accessories DB advances there, not here.
+    if (
+      ctx.accessoryOrders.has(ev.orderId) &&
+      (await upsertAccessory(deps, ctx, {
+        label,
+        orderId: ev.orderId,
+        name: `Order ${ev.orderId}`,
+        category: "Other",
+        status: accessoryStatusFromGeneral(ev.status),
+        merchant: amazonMerchant(msg.from),
+        dateMs: msg.internalDateMs,
+      }))
+    ) {
+      continue;
+    }
+
     const row = existing.get(ev.orderId);
     if (!row) continue; // not a general order (book/game, or never confirmed)
 
@@ -931,12 +1376,18 @@ async function runGeneralLifecycle(
     }
 
     if (cfg.DRY_RUN) {
-      await log.info(`[${label}] [dry-run] would set order ${ev.orderId} → ${ev.status}.`);
+      await log.info(
+        `[${label}] [dry-run] would set order ${ev.orderId} → ${ev.status}.`,
+      );
       continue;
     }
 
     try {
-      await general.setStatus(row.pageId, ev.status);
+      await general.setStatus(
+        row.pageId,
+        ev.status,
+        ev.status === "Delivered" ? msg.internalDateMs : undefined,
+      );
       row.status = ev.status; // keep the map current for later mail this tick
       await log.info(`[${label}] Order ${ev.orderId} → ${ev.status}.`);
     } catch (err) {

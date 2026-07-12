@@ -10,16 +10,35 @@ export type Currency = string;
 // unknown month falls back to the nearest earlier month present.
 const FALLBACK_RATES: Record<string, Record<string, number>> = {
   ARS: {
-    "2023-01": 185, "2023-02": 188, "2023-03": 202, "2023-04": 216,
-    "2023-05": 232, "2023-06": 248, "2023-07": 268, "2023-08": 320,
-    "2023-09": 350, "2023-10": 350, "2023-11": 357, "2023-12": 550,
-    "2024-01": 830, "2024-04": 870, "2024-07": 930, "2024-10": 980,
-    "2024-12": 1030, "2025-04": 1100, "2025-08": 1250, "2025-12": 1350,
+    "2023-01": 185,
+    "2023-02": 188,
+    "2023-03": 202,
+    "2023-04": 216,
+    "2023-05": 232,
+    "2023-06": 248,
+    "2023-07": 268,
+    "2023-08": 320,
+    "2023-09": 350,
+    "2023-10": 350,
+    "2023-11": 357,
+    "2023-12": 550,
+    "2024-01": 830,
+    "2024-04": 870,
+    "2024-07": 930,
+    "2024-10": 980,
+    "2024-12": 1030,
+    "2025-04": 1100,
+    "2025-08": 1250,
+    "2025-12": 1350,
     "2026-06": 1450,
   },
   // JPY is covered by the API at daily resolution; this is only a safety net.
   JPY: {
-    "2023-06": 140, "2024-06": 157, "2025-06": 145, "2026-01": 152, "2026-06": 148,
+    "2023-06": 140,
+    "2024-06": 157,
+    "2025-06": 145,
+    "2026-01": 152,
+    "2026-06": 148,
   },
 };
 
@@ -109,7 +128,11 @@ async function apiUsdPerUnit(cur: Currency, date: string): Promise<number | null
  * Returns null only if no rate can be resolved at all. Results (incl. fallback)
  * are cached per currency+date so a given day is resolved at most once.
  */
-export async function toUSD(amount: number, cur: Currency, dateMs: number): Promise<number | null> {
+export async function toUSD(
+  amount: number,
+  cur: Currency,
+  dateMs: number,
+): Promise<number | null> {
   if (cur === "USD") return round2(amount);
   await ensureLoaded();
   const date = new Date(dateMs).toISOString().slice(0, 10);
@@ -117,7 +140,9 @@ export async function toUSD(amount: number, cur: Currency, dateMs: number): Prom
   let perUnit = cache![key];
   if (perUnit == null) {
     perUnit =
-      (await apiUsdPerUnit(cur, date)) ?? fallbackUsdPerUnit(cur, date.slice(0, 7)) ?? NaN;
+      (await apiUsdPerUnit(cur, date)) ??
+      fallbackUsdPerUnit(cur, date.slice(0, 7)) ??
+      NaN;
     if (Number.isNaN(perUnit)) return null;
     cache![key] = perUnit;
     await writeFileAtomic(CACHE_FILE, JSON.stringify(cache, null, 2));

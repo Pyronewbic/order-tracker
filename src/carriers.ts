@@ -56,10 +56,7 @@ export function detectCarrier(from: string): Carrier | null {
  * Extract unique tracking numbers from `text` using the carrier's patterns
  * (falling back to every carrier's patterns when the carrier is unknown).
  */
-export function extractTrackingNumbers(
-  text: string,
-  carrier: Carrier | null,
-): string[] {
+export function extractTrackingNumbers(text: string, carrier: Carrier | null): string[] {
   const patterns = (carrier ? [carrier] : CARRIERS).flatMap((c) => c.tracking);
   const found = new Set<string>();
   for (const re of patterns) {

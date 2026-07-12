@@ -18,8 +18,7 @@ const SUBSCRIPTION_RE =
 
 // Currency amount: symbol or ISO code, then a number with optional thousands
 // separators and decimals. Covers $, £, €, ₹ and USD/GBP/EUR/INR.
-const AMOUNT_RE =
-  /(?:USD|GBP|EUR|INR|US\$|[$£€₹])\s?\d{1,3}(?:[,\d]*)(?:\.\d{2})?/i;
+const AMOUNT_RE = /(?:USD|GBP|EUR|INR|US\$|[$£€₹])\s?\d{1,3}(?:[,\d]*)(?:\.\d{2})?/i;
 
 /**
  * Parse a receipt/billing email into a {@link ChargeInfo}, or null if it does

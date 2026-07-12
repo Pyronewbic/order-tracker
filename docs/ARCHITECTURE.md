@@ -213,11 +213,13 @@ DB uses a parallel, simpler ladder (`Ordered → Shipped → Delivered`, termina
 Every DB is **opt-in** via its own env var; if the var is unset, that feature is
 off, and if the DB access check fails at startup the feature is disabled with a
 logged warning rather than crashing the process (only the primary book DB is
-required). There are five write targets, each with its own client and schema:
+required). There are six write targets, each with its own client and schema:
 
 - **Curated book DB** (`notion/client.ts`, `NOTION_DATABASE_ID`, required) —
   update-only (never creates rows). Sets `Status`, backfills `Category` only when
-  blank (never overwrites a manual value), and merges `Tags`. Statuses are
+  blank (never overwrites a manual value), merges `Tags`, writes a parsed
+  delivery `ETA` (only when the row has none, so a manual ETA is authoritative),
+  and stamps `Delivered on` when an order arrives. Statuses are
   translated at the boundary by `status-map.ts`: a `READ_MAP` normalizes on read
   (e.g. `Preorder → Ordered`) and a `WRITE_MAP` translates on write, where `null`
   means "this DB has no equivalent — leave Status untouched" so a shipment-only
@@ -228,11 +230,24 @@ required). There are five write targets, each with its own client and schema:
 - **Digital games DB** (`GAMES_DATABASE_ID`) — upsert by platform+title;
   `Purchased` never reverts to `Preordered`; stores a USD spend column.
 - **General purchases DB** (`GENERAL_DATABASE_ID`) — three independent passes over
-  one shared order map loaded once per tick: Amazon order confirmations (create
-  `Ordered` rows; skip book/game orders, which the domain DBs own), Amazon
-  post-order lifecycle (advance status by order number), and eBay confirmations +
-  lifecycle (create `Collectibles` rows; refund → `Returned`). Book/game and
+  one shared order map loaded once per tick (in `runTick`): Amazon order
+  confirmations (create `Ordered` rows; skip book/game orders, which the domain
+  DBs own), Amazon post-order lifecycle (advance status by order number), and
+  eBay confirmations + lifecycle (create `Collectibles` rows; refund → `Returned`).
+  The **shipping** job also routes an unmatched non-book item into this DB (keyed
+  by order #, category from the classifier, spend left blank until a confirmation
+  supplies it) rather than dropping it — deduping against the same shared map, so
+  the confirmation and lifecycle passes collapse onto that row. Book/game and
   fuzzy-matched-to-the-book-DB orders are excluded.
+- **Tech Accessories DB** (`TECH_ACCESSORIES_DATABASE_ID`) — when set, a purchase
+  that classifies as a *tech accessory* (charger/cable/hub/case/audio/storage/
+  input… — but not a whole device) is auto-added here instead of the general DB:
+  keyed by order # (a hidden column), self-categorized into the inventory's
+  buckets, and advanced along a delivery ladder (`Ordered → Shipped → Arriving →
+  Owned`, plus `Cancelled`) by the confirmation / shipping / lifecycle passes.
+  Manual rows (no order #) and a manual `Wishlist` are never touched; spend is
+  left blank until a confirmation supplies it (spend-only). "From now" is
+  inherent — the passes only see mail past their watermarks.
 - **Spend summary DB** (`SPEND_SUMMARY_DATABASE_ID`) — see below.
 
 All Notion reads/writes go through `withRetry` (see below). Notion responses are
@@ -272,10 +287,12 @@ best-effort — a Telegram failure is logged and swallowed, never breaking the
 poll. Every message is HTML-escaped and run through the redactor before sending,
 and requests carry a timeout.
 
-Events fire on each applied status change and on startup / poll failure / cap
-alerts. The optional daily digest (`digest.ts`) lists rows currently in motion
-(Delayed / Arriving Soon / In Transit / Ordered), sending an "all quiet" note
-when nothing is active so you know the job ran. Subscription detection
+Events fire on each applied status change, on startup / poll failure / cap
+alerts, and once per account when a Gmail token fails auth (deduped, cleared on
+the next successful poll). The optional daily digest (`digest.ts`) lists orders
+still on the way, **soonest ETA first**, with an "arriving soon" (next 3 days)
+section, and sends an "all quiet" note when nothing is active so you know the
+job ran. Subscription detection
 (`subscriptions/`) scans receipt mail for a merchant + amount, and alerts on a
 recurring charge (merchant seen before) or an explicit new-subscription phrasing;
 first-time one-off purchases are recorded silently.
@@ -303,9 +320,11 @@ first-time one-off purchases are recorded silently.
 
 ## Reliability guardrails
 
-- `withRetry` (`retry.ts`) wraps Notion calls with exponential backoff, honoring a
-  server `Retry-After` header and retrying only 429 / 5xx — so a burst across
-  several inboxes can't trip Notion's rate limit.
+- `withRetry` (`retry.ts`) wraps Notion (and other) calls with exponential
+  backoff, honoring a server `Retry-After` header and retrying 429 / 5xx **plus
+  transient network/timeout errors** (DNS `ENOTFOUND`, socket resets, connect
+  timeouts, the Notion SDK request-timeout) — so a rate-limit burst or an
+  intermittent network blip is ridden out rather than dropping a status write.
 - `MAX_UPDATES_PER_TICK` is a **soft** alarm (warn + ping, not a hard stop): an
   unusually large tick likely signals a misconfigured query, but a legitimate
   first-run backlog still completes.

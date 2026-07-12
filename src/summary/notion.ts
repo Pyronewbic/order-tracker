@@ -5,14 +5,18 @@ import { isTerminalGeneralStatus } from "../general/lifecycle.js";
 import type { Logger } from "../logger.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const txt = (p: any): string => (p?.rich_text ?? []).map((t: { plain_text: string }) => t.plain_text).join("");
-const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({ rich_text: [{ text: { content: s } }] });
+const txt = (p: any): string =>
+  (p?.rich_text ?? []).map((t: { plain_text: string }) => t.plain_text).join("");
+const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({
+  rich_text: [{ text: { content: s } }],
+});
 
 // Notion property bags are dynamically shaped; read them through this helper
 // instead of sprinkling `any` casts at every call site.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type NotionProps = Record<string, any>;
-const propsOf = (r: unknown): NotionProps => (r as { properties: NotionProps }).properties;
+const propsOf = (r: unknown): NotionProps =>
+  (r as { properties: NotionProps }).properties;
 
 /** Currency of a book row, from the price symbol (₹/¥/$) with Source as fallback. */
 function bookCurrency(price: string, source: string): Currency {
@@ -63,7 +67,9 @@ export class SpendSummary {
 
   async verifyAccess(): Promise<void> {
     try {
-      await withRetry(() => this.notion.databases.retrieve({ database_id: this.summaryDbId }));
+      await withRetry(() =>
+        this.notion.databases.retrieve({ database_id: this.summaryDbId }),
+      );
     } catch (err) {
       throw new Error(
         `Cannot access spend-summary database ${this.summaryDbId}: ${String(err)}. ` +
@@ -77,7 +83,11 @@ export class SpendSummary {
     let cursor: string | undefined;
     do {
       const r = await withRetry(() =>
-        this.notion.databases.query({ database_id: dbId, start_cursor: cursor, page_size: 100 }),
+        this.notion.databases.query({
+          database_id: dbId,
+          start_cursor: cursor,
+          page_size: 100,
+        }),
       );
       out.push(...(r.results as Record<string, unknown>[]));
       cursor = r.has_more ? (r.next_cursor ?? undefined) : undefined;
@@ -104,8 +114,13 @@ export class SpendSummary {
       const amount = parseAmount(price);
       if (amount == null) continue;
       const source = props.Source?.select?.name ?? "";
-      const dateStr: string = props.ETA?.date?.start ?? (r as { created_time: string }).created_time;
-      const usd = await toUSD(amount, bookCurrency(price, source), new Date(dateStr).getTime());
+      const dateStr: string =
+        props.ETA?.date?.start ?? (r as { created_time: string }).created_time;
+      const usd = await toUSD(
+        amount,
+        bookCurrency(price, source),
+        new Date(dateStr).getTime(),
+      );
       if (usd == null) continue;
       const prev = props["Spend (USD)"]?.number ?? null;
       if (!dryRun && prev !== usd) {
@@ -125,7 +140,8 @@ export class SpendSummary {
         const props = propsOf(r);
         const usd = props["Spend (USD)"]?.number;
         if (typeof usd !== "number") continue;
-        const dateStr: string = props.Date?.date?.start ?? (r as { created_time: string }).created_time;
+        const dateStr: string =
+          props.Date?.date?.start ?? (r as { created_time: string }).created_time;
         add("Games", new Date(dateStr).toISOString().slice(0, 7), usd);
       }
     }
@@ -140,7 +156,8 @@ export class SpendSummary {
         if (isTerminalGeneralStatus(props.Status?.select?.name ?? "")) continue;
         const usd = props["Spend (USD)"]?.number;
         if (typeof usd !== "number") continue;
-        const dateStr: string = props.Date?.date?.start ?? (r as { created_time: string }).created_time;
+        const dateStr: string =
+          props.Date?.date?.start ?? (r as { created_time: string }).created_time;
         const source = generalSource(props.Merchant?.select?.name ?? "");
         add(source, new Date(dateStr).toISOString().slice(0, 7), usd);
       }
@@ -176,10 +193,15 @@ export class SpendSummary {
         Items: { number: b.items },
       } as never;
       if (ex) {
-        await withRetry(() => this.notion.pages.update({ page_id: ex.pageId, properties }));
+        await withRetry(() =>
+          this.notion.pages.update({ page_id: ex.pageId, properties }),
+        );
       } else {
         await withRetry(() =>
-          this.notion.pages.create({ parent: { database_id: this.summaryDbId }, properties }),
+          this.notion.pages.create({
+            parent: { database_id: this.summaryDbId },
+            properties,
+          }),
         );
       }
     }
@@ -202,12 +224,16 @@ export class SpendSummary {
       if (!activeSources.has(k.split("|")[0]!)) continue;
       archived += 1;
       if (dryRun) continue;
-      await withRetry(() => this.notion.pages.update({ page_id: ex.pageId, archived: true }));
+      await withRetry(() =>
+        this.notion.pages.update({ page_id: ex.pageId, archived: true }),
+      );
     }
 
     await log.info(
       `[summary] ${writes} bucket(s) ${dryRun ? "would change" : "updated"}` +
-        (archived ? `, ${archived} emptied bucket(s) ${dryRun ? "would be" : ""} archived` : "") +
+        (archived
+          ? `, ${archived} emptied bucket(s) ${dryRun ? "would be" : ""} archived`
+          : "") +
         ".",
     );
   }

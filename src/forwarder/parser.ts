@@ -63,7 +63,10 @@ export function parseForwarderEmail(msg: ParsedMessage): ForwarderEvent | null {
   // distinct phrasing; reminders are the broad fallback.
   if (ARRIVAL.test(subject) || ARRIVAL.test(body)) {
     const code = cleanCode(
-      firstMatch(body, [/package\s+(\w+)\s+has safely arrived/i, /Package ID #\s*(\w+)/i]),
+      firstMatch(body, [
+        /package\s+(\w+)\s+has safely arrived/i,
+        /Package ID #\s*(\w+)/i,
+      ]),
     );
     if (!code) return null; // an arrival we can't key is useless
     const declared = firstMatch(body, [/Declared Value\s*\$?\s*([\d,.]+)/i]);
@@ -72,7 +75,9 @@ export function parseForwarderEmail(msg: ParsedMessage): ForwarderEvent | null {
       receivedMs,
       code,
       from: firstMatch(body, [/From\s+([\w .&-]{2,20}?)\s+(?:Weight|Dimensions)/i]),
-      contents: firstMatch(body, [/Contents:\s*•?\s*(.+?)\s*(?:Please check|If anything)/i]),
+      contents: firstMatch(body, [
+        /Contents:\s*•?\s*(.+?)\s*(?:Please check|If anything)/i,
+      ]),
       declaredValue: declared ? `$${declared}` : undefined,
       weight: firstMatch(body, [/Weight\s+([\d.]+\s*(?:kg|lbs?|g))/i]),
     };
@@ -93,7 +98,9 @@ export function parseForwarderEmail(msg: ParsedMessage): ForwarderEvent | null {
     if (!code) return null;
 
     let daysLeft: number | undefined;
-    const n = firstMatch(subject, [/last\s+(\d+)\s+day/i]) ?? firstMatch(body, [/only\s+(\d+)\s+day/i]);
+    const n =
+      firstMatch(subject, [/last\s+(\d+)\s+day/i]) ??
+      firstMatch(body, [/only\s+(\d+)\s+day/i]);
     if (n) daysLeft = Number(n);
     // "approaching storage limit. Last Day to take an action" → effectively 1 day.
     else if (/approaching storage limit/i.test(subject)) daysLeft = 1;

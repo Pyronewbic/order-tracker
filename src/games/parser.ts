@@ -87,13 +87,19 @@ export function parseGameEmail(msg: ParsedMessage): GameEvent | null {
     if (pre) return game("Amazon JP", "Preordered", pre);
     // Code-delivery: "TITLE の引き換えコード…" (JP) or "Your redemption codes for TITLE are" (EN)
     const code = cleanTitle(
-      firstMatch(subject, [/^(.+?)の引き換えコード/, /redemption codes? for\s+(.+?)\s+are/i]),
+      firstMatch(subject, [
+        /^(.+?)の引き換えコード/,
+        /redemption codes? for\s+(.+?)\s+are/i,
+      ]),
     );
     if (code) return game("Amazon JP", "Purchased", code);
     // Order confirmation: Amazon.co.jpでのご注文: TITLE
     const order = cleanTitle(firstMatch(subject, [/ご注文:\s*(.+)$/]));
     if (order) {
-      const price = firstMatch(body, [/総計:\s*([￥¥]\s*[\d,]+)/, /税引前合計:\s*([￥¥]\s*[\d,]+)/])?.replace(/\s+/g, "");
+      const price = firstMatch(body, [
+        /総計:\s*([￥¥]\s*[\d,]+)/,
+        /税引前合計:\s*([￥¥]\s*[\d,]+)/,
+      ])?.replace(/\s+/g, "");
       return game("Amazon JP", "Purchased", order, { price });
     }
     return null;
@@ -112,7 +118,9 @@ export function parseGameEmail(msg: ParsedMessage): GameEvent | null {
       : HAS_JP.test(subject) || HAS_JP.test(body)
         ? "eShop JP"
         : "eShop US";
-    const device = firstMatch(body, [/(?:○デバイスタイプ|Device Type):\s*(Nintendo Switch(?:\s*2)?)/]);
+    const device = firstMatch(body, [
+      /(?:○デバイスタイプ|Device Type):\s*(Nintendo Switch(?:\s*2)?)/,
+    ]);
 
     // Preorder: 【予約確認】TITLE の予約を承りました  (title also in body)
     if (/予約確認|pre-?order/i.test(subject)) {
@@ -125,14 +133,21 @@ export function parseGameEmail(msg: ParsedMessage): GameEvent | null {
     }
 
     // Purchase receipt — JP: [ご利用明細]…○ご購入商品 ; US/EN: "Purchased Item:"
-    if (/ご利用明細|商品のご購入|confirmation of digital purchase|receipt|thank you for your (purchase|order)/i.test(subject)) {
+    if (
+      /ご利用明細|商品のご購入|confirmation of digital purchase|receipt|thank you for your (purchase|order)/i.test(
+        subject,
+      )
+    ) {
       const title = cleanTitle(
         firstMatch(body, [
           /○ご購入商品:\s*(.+?)\s*(?:○デバイスタイプ|お支払い|[-‑–]{3,})/,
           /Purchased Item:\s*(.+?)\s*(?:Purchased Membership|Device Type|[‑–-]{3,})/,
         ]),
       );
-      const price = firstMatch(body, [/お支払い合計金額:\s*([\d,]+円)/, /Total:\s*(\$[\d.,]+)/]);
+      const price = firstMatch(body, [
+        /お支払い合計金額:\s*([\d,]+円)/,
+        /Total:\s*(\$[\d.,]+)/,
+      ]);
       return game(platform, "Purchased", title, { price, device });
     }
     return null;

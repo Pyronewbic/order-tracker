@@ -21,6 +21,12 @@ export interface ShipmentUpdate {
   tags: string[];
   /** Short human-readable detail used in logs / notifications. */
   detail: string;
+  /** Parsed delivery ETA (epoch ms, date-only) for a still-in-motion order, if
+   * the email states one. Feeds the Notion ETA / calendar. */
+  etaMs?: number;
+  /** For a Delivered email, the email's own date (epoch ms) — the actual
+   * delivered-on date, recorded so slip = ETA − delivered. */
+  deliveredMs?: number;
 }
 
 /**
@@ -143,6 +149,90 @@ function extractOrderId(msg: ParsedMessage): string | undefined {
   );
 }
 
+const MONTHS: Record<string, number> = {
+  jan: 0,
+  feb: 1,
+  mar: 2,
+  apr: 3,
+  may: 4,
+  jun: 5,
+  jul: 6,
+  aug: 7,
+  sep: 8,
+  oct: 9,
+  nov: 10,
+  dec: 11,
+};
+const WEEKDAY: Record<string, number> = {
+  sun: 0,
+  mon: 1,
+  tue: 2,
+  wed: 3,
+  thu: 4,
+  fri: 5,
+  sat: 6,
+};
+const DAY_MS = 86_400_000;
+
+/**
+ * Resolve a delivery ETA (epoch ms, UTC date-only) from a shipment email,
+ * anchored to when the email was received. Only text adjacent to a delivery cue
+ * is examined, so an unrelated date (an order date, a price, a copyright year)
+ * can't be misread. Absolute dates are tried first, then relative words
+ * (today / tomorrow / weekday). Returns undefined when no plausible date is
+ * found; a result is accepted only within [anchor − 1 day, anchor + 120 days],
+ * which rejects past dates and year misparses. Best-effort by design — a manual
+ * ETA always wins at the write layer.
+ */
+export function resolveEtaMs(text: string, anchorMs: number): number | undefined {
+  const cue = text.match(
+    /(?:arriv\w*|deliver\w*|expected|estimated|scheduled)[^.\n]{0,40}/i,
+  );
+  if (!cue) return undefined;
+  const scope = cue[0].toLowerCase();
+
+  const a = new Date(anchorMs);
+  const anchorUTC = Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate());
+  const MON = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec";
+
+  let eta: number | undefined;
+  const md = scope.match(
+    new RegExp(`\\b(${MON})[a-z]*\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s*(\\d{4}))?`),
+  );
+  const dm = scope.match(
+    new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MON})[a-z]*(?:,?\\s*(\\d{4}))?`),
+  );
+  if (md || dm) {
+    const mon = MONTHS[(md ? md[1] : dm![2])!]!;
+    const day = Number(md ? md[2] : dm![1]);
+    const yr = md ? md[3] : dm![3];
+    const year = yr ? Number(yr) : a.getUTCFullYear();
+    let cand = Date.UTC(year, mon, day);
+    // No explicit year and the date is well in the past → a Dec→Jan rollover.
+    if (!yr && cand < anchorUTC - 35 * DAY_MS) cand = Date.UTC(year + 1, mon, day);
+    if (day >= 1 && day <= 31) eta = cand;
+  } else if (/\btoday\b/.test(scope)) {
+    eta = anchorUTC;
+  } else if (/\btomorrow\b/.test(scope)) {
+    eta = anchorUTC + DAY_MS;
+  } else {
+    const wd = scope.match(/\b(sun|mon|tue|wed|thu|fri|sat)[a-z]*\b/);
+    if (wd) {
+      const target = WEEKDAY[wd[1]!]!;
+      const cur = new Date(anchorUTC).getUTCDay();
+      let delta = (target - cur + 7) % 7;
+      if (delta === 0) delta = 7; // "arriving Monday" when today is Monday → next
+      eta = anchorUTC + delta * DAY_MS;
+    }
+  }
+
+  if (eta === undefined) return undefined;
+  // Reject a past date (a misread order date) or an implausibly far one (a
+  // year misparse); 120 days still covers slow international / preorder ETAs.
+  if (eta < anchorUTC - DAY_MS || eta > anchorUTC + 120 * DAY_MS) return undefined;
+  return eta;
+}
+
 /** Trim Amazon noise like "and 2 more items" and surrounding punctuation. */
 function cleanItemName(raw: string): string {
   return raw
@@ -168,6 +258,13 @@ export function buildUpdate(
   const itemName = itemNameOverride?.trim() || extractItemName(msg.subject);
 
   const signal = { itemName, from: msg.from, subject: msg.subject };
+  // Only pre-delivery states carry a meaningful ETA; a Delivered email instead
+  // records its own date as the actual delivered-on date.
+  const inMotion =
+    status === "Ordered" ||
+    status === "In Transit" ||
+    status === "Arriving Soon" ||
+    status === "Delayed";
   return {
     status,
     itemName,
@@ -177,6 +274,8 @@ export function buildUpdate(
     category: classifyItem(signal),
     tags: tagsFor(signal),
     detail: msg.subject.trim(),
+    etaMs: inMotion ? resolveEtaMs(haystack, msg.internalDateMs) : undefined,
+    deliveredMs: status === "Delivered" ? msg.internalDateMs : undefined,
   };
 }
 

@@ -11,6 +11,7 @@ import { ForwarderNotionClient } from "./forwarder/notion.js";
 import { GamesNotionClient } from "./games/notion.js";
 import { SpendSummary } from "./summary/notion.js";
 import { GeneralNotionClient } from "./general/notion.js";
+import { AccessoriesNotionClient } from "./accessories/notion.js";
 import { sendDigest } from "./digest.js";
 import { createNotifier } from "./telegram/client.js";
 import { runTick, type Deps } from "./pipeline.js";
@@ -63,12 +64,17 @@ async function main(): Promise<void> {
   // here disables just this feature rather than taking down the book tracker.
   let forwarder: ForwarderNotionClient | null = null;
   if (cfg.FORWARDER_DATABASE_ID) {
-    const client = new ForwarderNotionClient(cfg.NOTION_API_KEY, cfg.FORWARDER_DATABASE_ID);
+    const client = new ForwarderNotionClient(
+      cfg.NOTION_API_KEY,
+      cfg.FORWARDER_DATABASE_ID,
+    );
     try {
       await client.verifyAccess();
       forwarder = client;
     } catch (err) {
-      await log.error(`Forwarder DB access check failed; forwarder tracking disabled: ${String(err)}`);
+      await log.error(
+        `Forwarder DB access check failed; forwarder tracking disabled: ${String(err)}`,
+      );
     }
   }
 
@@ -81,7 +87,9 @@ async function main(): Promise<void> {
       await client.verifyAccess();
       games = client;
     } catch (err) {
-      await log.error(`Digital-games DB access check failed; games tracking disabled: ${String(err)}`);
+      await log.error(
+        `Digital-games DB access check failed; games tracking disabled: ${String(err)}`,
+      );
     }
   }
 
@@ -93,7 +101,26 @@ async function main(): Promise<void> {
       await client.verifyAccess();
       general = client;
     } catch (err) {
-      await log.error(`General-purchases DB access check failed; disabled: ${String(err)}`);
+      await log.error(
+        `General-purchases DB access check failed; disabled: ${String(err)}`,
+      );
+    }
+  }
+
+  // Optional tech-accessory tracking → Tech Inventory Accessories DB.
+  let accessories: AccessoriesNotionClient | null = null;
+  if (cfg.TECH_ACCESSORIES_DATABASE_ID) {
+    const client = new AccessoriesNotionClient(
+      cfg.NOTION_API_KEY,
+      cfg.TECH_ACCESSORIES_DATABASE_ID,
+    );
+    try {
+      await client.verifyAccess();
+      accessories = client;
+    } catch (err) {
+      await log.error(
+        `Accessories DB access check failed; tech-accessory tracking disabled: ${String(err)}`,
+      );
     }
   }
 
@@ -112,7 +139,9 @@ async function main(): Promise<void> {
       await client.verifyAccess();
       summary = client;
     } catch (err) {
-      await log.error(`Spend-summary DB access check failed; summary disabled: ${String(err)}`);
+      await log.error(
+        `Spend-summary DB access check failed; summary disabled: ${String(err)}`,
+      );
     }
   }
 
@@ -124,11 +153,24 @@ async function main(): Promise<void> {
     if (cfg.ANTHROPIC_API_KEY) {
       llm = new LlmParser(cfg.ANTHROPIC_API_KEY, cfg.LLM_MODEL);
     } else {
-      await log.warn("LLM_FALLBACK is set but ANTHROPIC_API_KEY is missing; fallback disabled.");
+      await log.warn(
+        "LLM_FALLBACK is set but ANTHROPIC_API_KEY is missing; fallback disabled.",
+      );
     }
   }
 
-  const deps: Deps = { cfg, notion, notifier, log, llm, forwarder, games, summary, general };
+  const deps: Deps = {
+    cfg,
+    notion,
+    notifier,
+    log,
+    llm,
+    forwarder,
+    games,
+    summary,
+    general,
+    accessories,
+  };
 
   // Guard against overlapping runs if a poll outlives its interval.
   let running = false;
@@ -178,6 +220,7 @@ async function main(): Promise<void> {
       (forwarder ? ", forwarder: on" : "") +
       (games ? ", games: on" : "") +
       (general ? ", general: on" : "") +
+      (accessories ? ", accessories: on" : "") +
       (summary ? ", summary: on" : "") +
       (llm ? ", LLM fallback: on" : "") +
       (cfg.DRY_RUN ? ", DRY-RUN" : "") +

@@ -19,10 +19,40 @@ function statusOf(err: unknown): number | undefined {
   return typeof sc === "number" ? sc : undefined;
 }
 
-/** Default policy: retry rate limits (429) and transient server errors (5xx). */
+/** Read a string `code` off an unknown error, if present. */
+function codeOf(err: unknown): string | undefined {
+  const c = (err as { code?: unknown } | null)?.code;
+  return typeof c === "string" ? c : undefined;
+}
+
+// Transient network/DNS/socket failures (node-fetch surfaces the OS errno as
+// `code`) and the Notion SDK's own request-timeout code. These carry no numeric
+// HTTP status, so the status check below never catches them — yet an intermittent
+// DNS blip or socket reset is exactly what a retry should ride out. Without this
+// a transient failure isn't retried, and with a pre-advanced watermark a
+// delivery-status write can be dropped rather than merely delayed.
+const RETRYABLE_CODES = new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENETUNREACH",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "notionhq_client_request_timeout",
+]);
+
+/**
+ * Default policy: retry rate limits (429), transient server errors (5xx), and
+ * transient network/timeout failures (which carry a string `code`, not a status).
+ */
 function defaultIsRetryable(err: unknown): boolean {
   const status = statusOf(err);
-  return status === 429 || (typeof status === "number" && status >= 500);
+  if (status === 429 || (typeof status === "number" && status >= 500)) return true;
+  const code = codeOf(err);
+  return code !== undefined && RETRYABLE_CODES.has(code);
 }
 
 /** Default Retry-After reader: honor a `retry-after` header (seconds → ms). */

@@ -32,7 +32,13 @@ export function matchRow(
   const contained = containmentMatch(itemName, rows);
   if (contained) return { row: contained, score: 0.05 };
 
-  // Pass 2: fuzzy.
+  // Pass 2: leading-prefix — the email title is a truncated prefix of a curated
+  // row name ("Super Mario Encyclo…" → "Super Mario Encyclopedia"). Guarded to a
+  // single unambiguous row so it can't steal a match Fuse would place better.
+  const prefixed = prefixMatch(itemName, rows);
+  if (prefixed) return { row: prefixed, score: 0.1 };
+
+  // Pass 3: fuzzy.
   const fuse = new Fuse(rows, {
     keys: ["book"],
     includeScore: true,
@@ -105,6 +111,46 @@ function containmentMatch(itemName: string, rows: OrderRow[]): OrderRow | null {
     const chars = rowTokens.join("").length;
     if (rowTokens.length < 2 || chars < 6) continue; // too generic to be safe
     if (!containsTokenRun(item, rowTokens)) continue;
+    if (chars > bestLen) {
+      best = row;
+      bestLen = chars;
+      tie = false;
+    } else if (chars === bestLen) {
+      tie = true;
+    }
+  }
+  return tie ? null : best;
+}
+
+/**
+ * Match a curated row whose name *starts with* the (possibly subject-truncated)
+ * item name: every item token equals the row's token at that position, and the
+ * final item token may be a prefix of the row's (catches a mid-word cut like
+ * "encyclo" → "encyclopedia"). The item must be ≥2 tokens / ≥6 chars so a
+ * generic short title can't prefix-match everything, and the result must be a
+ * single unambiguous row (a prefix shared by two rows defers to Fuse).
+ */
+function prefixMatch(itemName: string, rows: OrderRow[]): OrderRow | null {
+  const item = normalizeTokens(itemName);
+  if (item.length < 2 || item.join("").length < 6) return null; // too generic
+
+  let best: OrderRow | null = null;
+  let bestLen = 0;
+  let tie = false;
+  for (const row of rows) {
+    const rowTokens = normalizeTokens(row.book);
+    if (rowTokens.length < item.length) continue;
+    let ok = true;
+    for (let j = 0; j < item.length; j++) {
+      const rt = rowTokens[j]!;
+      const it = item[j]!;
+      if (j === item.length - 1 ? !rt.startsWith(it) : rt !== it) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    const chars = rowTokens.join("").length;
     if (chars > bestLen) {
       best = row;
       bestLen = chars;

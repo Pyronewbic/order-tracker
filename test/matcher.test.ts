@@ -22,6 +22,16 @@ test("fuzzy match tolerates a typo", () => {
   assert.equal(m.row.book, "Super Mario Odyssey");
 });
 
+test("leading-prefix: a subject-truncated title matches the full row name", () => {
+  const m = matchRow(
+    "Super Mario Encyclo",
+    [row("Super Mario Encyclopedia"), row("Zelda")],
+    0.4,
+  );
+  assert(m);
+  assert.equal(m.row.book, "Super Mario Encyclopedia");
+});
+
 test("returns null when nothing is close enough", () => {
   assert.equal(
     matchRow("Completely Unrelated Widget", [row("Super Mario Odyssey")], 0.4),

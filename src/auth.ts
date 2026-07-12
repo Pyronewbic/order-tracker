@@ -43,9 +43,7 @@ async function main(): Promise<void> {
     );
   }
   if (!LABEL_RE.test(label)) {
-    throw new Error(
-      `Invalid label "${label}". Use letters, digits, "_", "-", "." only.`,
-    );
+    throw new Error(`Invalid label "${label}". Use letters, digits, "_", "-", "." only.`);
   }
 
   const port = cfg.OAUTH_REDIRECT_PORT;
@@ -114,7 +112,9 @@ function waitForCode(authUrl: string, port: number): Promise<string> {
           return;
         }
 
-        res.end("Authorization complete. You can close this tab and return to the terminal.");
+        res.end(
+          "Authorization complete. You can close this tab and return to the terminal.",
+        );
         server.close();
         resolve(code);
       } catch (err) {

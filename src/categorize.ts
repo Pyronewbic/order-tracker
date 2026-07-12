@@ -14,7 +14,8 @@ export interface ItemSignal {
 // curation rather than mislabelled. The keyword lists are intentionally easy to
 // extend; arbitrary game titles need the optional LLM categoriser to be reliable.
 
-const DIGITAL_SENDER = /digital-?no-?reply@|digitalorder-?update@|digital-no-reply|digitalorder/i;
+const DIGITAL_SENDER =
+  /digital-?no-?reply@|digitalorder-?update@|digital-no-reply|digitalorder/i;
 const DIGITAL_TEXT =
   /\b(online code|download code|digital code|redemption code|redeem code|digital download|prepaid|gift ?card|e-?gift)\b|オンラインコード|ダウンロード版|引き換えコード|プリペイド|ギフト券/i;
 
@@ -46,6 +47,52 @@ export function classifyItem(signal: ItemSignal): OrderCategory | null {
   return null;
 }
 
+// Keyword → Tech-Inventory accessory bucket, checked most-specific first. These
+// are the categories used by devices; extend with the gear you buy. An item that
+// matches none of these but is still a tech accessory/electronic falls back to
+// "Other" (see techAccessoryCategory).
+const TECH_BUCKETS: [RegExp, string][] = [
+  [
+    /\b(dac|amps?|amplifiers?|iems?|in-?ear|earphones?|earbuds?|headphones?|head ?sets?|microphones?|\bmics?\b)\b/i,
+    "Audio",
+  ],
+  [/\b(capture cards?|capture)\b/i, "Capture"],
+  [
+    /\b(ssds?|hdds?|nvme|hard drives?|enclosures?|micro ?sd|sd cards?|memory cards?|flash drives?|usb drives?|m\.2)\b/i,
+    "Storage",
+  ],
+  [
+    /\b(chargers?|charging|gan|power ?banks?|power ?adapters?|wall chargers?|batter(?:y|ies))\b/i,
+    "Power",
+  ],
+  [
+    /\b(hubs?|docks?|docking|dongles?|adapters?|kvm|splitters?|ethernet|hdmi switch)\b/i,
+    "Connectivity",
+  ],
+  [/\b(monitors?|displays?|external screens?)\b/i, "Display"],
+  [
+    /\b(controllers?|gamepads?|joy-?cons?|keyboards?|mouse|mice|trackpads?|stylus(?:es)?)\b/i,
+    "Input",
+  ],
+  [/\b(cables?|cords?|hdmi lead|usb-?c cable)\b/i, "Cable"],
+  [/\b(cases?|sleeves?|pouch(?:es)?|bags?|covers?|skins?|folios?)\b/i, "Case/Carry"],
+];
+
+/**
+ * If an order item is a tech accessory (the kind that pairs with a device),
+ * return its Tech-Inventory category bucket; else null. A specific keyword wins;
+ * otherwise an item the general classifier calls an Accessory or Electronics
+ * falls back to "Other". Books/games/digital/groceries/clothing → null.
+ */
+export function techAccessoryCategory(signal: ItemSignal): string | null {
+  const hay = `${signal.itemName}\n${signal.subject}`;
+  for (const [re, bucket] of TECH_BUCKETS) if (re.test(hay)) return bucket;
+  // No specific bucket: accept only a clear Accessory. NOT "Electronics" — that
+  // also covers whole devices (consoles, laptops, tablets), which aren't
+  // accessories and belong in the Devices inventory, not here.
+  return classifyItem(signal) === "Accessory" ? "Other" : null;
+}
+
 // Franchise name → canonical tag. Extend with the series you buy.
 const FRANCHISES: [RegExp, string][] = [
   [/zelda/i, "Zelda"],
@@ -74,7 +121,8 @@ export function tagsFor(signal: ItemSignal): string[] {
   for (const [re, tag] of FRANCHISES) if (re.test(hay)) tags.add(tag);
   if (/\bpre-?orders?\b|予約/i.test(hay)) tags.add("Preorder");
   if (/\b(guide|encyclopedia|art ?book)\b/i.test(hay)) tags.add("Guide");
-  if (/\b(limited|collector'?s|special|deluxe) edition\b/i.test(hay)) tags.add("Limited Edition");
+  if (/\b(limited|collector'?s|special|deluxe) edition\b/i.test(hay))
+    tags.add("Limited Edition");
   if (/\bswitch 2\b/i.test(hay)) tags.add("Switch 2");
   if (/\bamiibo\b/i.test(hay)) tags.add("amiibo");
   if (DIGITAL_SENDER.test(signal.from) || DIGITAL_TEXT.test(hay)) tags.add("Digital");

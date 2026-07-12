@@ -95,14 +95,16 @@ export function parseEbayOrder(msg: ParsedMessage): GeneralOrder | null {
  * (refunds) or body (shipment/delivery).
  */
 export function parseEbayLifecycle(msg: ParsedMessage): LifecycleEvent | null {
-  const orderId = msg.subject.match(ORDER_RE)?.[0] ?? clean(msg.body).match(ORDER_RE)?.[0];
+  const orderId =
+    msg.subject.match(ORDER_RE)?.[0] ?? clean(msg.body).match(ORDER_RE)?.[0];
   if (!orderId) return null;
 
   const subject = msg.subject;
   let status: GeneralStatus | null = null;
   if (/refund/i.test(subject)) status = "Returned";
   else if (/delivered|dropped off/i.test(subject)) status = "Delivered";
-  else if (/with its carrier|out for delivery|on its way|has shipped/i.test(subject)) status = "Shipped";
+  else if (/with its carrier|out for delivery|on its way|has shipped/i.test(subject))
+    status = "Shipped";
   if (!status) return null;
 
   return { orderId, status };

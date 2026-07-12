@@ -73,7 +73,9 @@ export class GamesNotionClient {
 
   async verifyAccess(): Promise<void> {
     try {
-      await withRetry(() => this.notion.databases.retrieve({ database_id: this.databaseId }));
+      await withRetry(() =>
+        this.notion.databases.retrieve({ database_id: this.databaseId }),
+      );
     } catch (err) {
       throw new Error(
         `Cannot access digital-games database ${this.databaseId}: ${String(err)}. ` +

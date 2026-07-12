@@ -55,7 +55,10 @@ function num(s: string): number | null {
     const after = t.length - li - 1;
     if (after === 1 || after === 2) {
       const dec = t[li]!;
-      t = t.split(dec === "," ? "." : ",").join("").replace(dec, ".");
+      t = t
+        .split(dec === "," ? "." : ",")
+        .join("")
+        .replace(dec, ".");
     } else t = t.replace(/[.,]/g, "");
   }
   const v = parseFloat(t);

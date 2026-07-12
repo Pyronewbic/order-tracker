@@ -99,9 +99,9 @@ The main book DB is required; every other DB is opt-in via its `*_DATABASE_ID`
 (**unset = that feature off**). One integration serves all of them.
 
 **Integration capabilities:** the main book DB needs only **Read** + **Update**.
-The four auto-creating DBs (forwarder, games, general, spend summary) each
-additionally need **Insert content**. The integration must be connected to
-**each** DB you use individually (••• → Connections).
+The auto-creating DBs (forwarder, games, general, spend summary, tech
+accessories) each additionally need **Insert content**. The integration must be
+connected to **each** DB you use individually (••• → Connections).
 
 | Variable | Required? | Default | What it does | Example / placeholder |
 |---|---|---|---|---|
@@ -111,6 +111,7 @@ additionally need **Insert content**. The integration must be connected to
 | `GAMES_DATABASE_ID` | Opt-in | off | Standalone "Digital Games" DB (Nintendo eShop US/JP, Amazon JP game codes). Wallet top-ups and NSO subscriptions excluded. Needs Insert content. | `your-games-db-id` |
 | `GENERAL_DATABASE_ID` | Opt-in | off | General "Purchases" DB (non-book/game Amazon orders + eBay). One row per order; book/game orders are dropped so the summary never double-counts. Needs Insert content. Gates `GENERAL_LIFECYCLE_QUERY` and `EBAY_QUERY`. | `your-general-db-id` |
 | `SPEND_SUMMARY_DATABASE_ID` | Opt-in | off | Cross-DB "Spend Summary" DB rolling per-month USD spend (books + games + general) into a Source × Month view. Needs Insert content. | `your-summary-db-id` |
+| `TECH_ACCESSORIES_DATABASE_ID` | Opt-in | off | Tech Inventory "Accessories" DB. A tech-accessory purchase (charger/cable/hub/case/audio/storage/input… — **not** a whole device) is auto-added here, self-categorized, with a delivery ladder (`Ordered → Shipped → Arriving → Owned`), **instead of** the general Purchases DB. Keyed by a hidden `Order #`; manual rows are never touched. Needs Insert content. Priced creation uses the order-confirmation pass, so enable `GENERAL_DATABASE_ID` too. | `your-accessories-db-id` |
 
 > The main DB's Status values pass through a translation layer
 > (`src/notion/status-map.ts`) — not every internal status is written verbatim.
@@ -136,7 +137,7 @@ are negative.
 
 | Variable | Required? | Default | What it does | Example / placeholder |
 |---|---|---|---|---|
-| `DIGEST_CRON` | Optional | — (unset → digest off) | Cron expression for the daily Telegram digest. **Requires Telegram.** The digest lists every row still in motion — `Ordered`, `In Transit`, `Arriving Soon`, and `Delayed` (all non-terminal statuses); `Delivered`/`Cancelled`/`Returned` are omitted. | `0 8 * * *` (8am daily) |
+| `DIGEST_CRON` | Optional | — (unset → digest off) | Cron expression for the daily Telegram digest. **Requires Telegram.** Lists every order still on the way, **soonest ETA first**, with an "arriving soon" (next 3 days) section (statuses `Arriving Soon` / `In Transit` / `Ordered`; `Delivered` and terminal statuses omitted). | `0 8 * * *` (8am daily) |
 
 **Timezone.** Both cron schedules (`POLL_CRON`, `DIGEST_CRON`) run in the **host
 process timezone** — there is no timezone env var. To pin the schedule, set the
@@ -272,7 +273,20 @@ it.
 ### Digest active statuses
 
 - **Type:** code constant.
-- **Where:** `src/digest.ts` — `ACTIVE = ["Delayed", "Arriving Soon",
-  "In Transit", "Ordered"]` (also the display order). Governs which rows appear
-  in the daily digest.
-- **How to change:** edit the array to add/remove statuses or reorder the digest.
+- **Where:** `src/digest.ts` — `ACTIVE = ["Arriving Soon", "In Transit",
+  "Ordered"]`. Governs which rows appear in the daily digest; rows are ordered
+  **soonest ETA first** (this array is only the fallback order for rows with no
+  ETA). `Delayed` is excluded — the book DB folds it into In Transit on write.
+- **How to change:** edit the array to add/remove statuses.
+
+### Tech-accessory buckets & device exclusion
+
+- **Type:** code constants (keyword regexes).
+- **Where:** `src/categorize.ts` — `TECH_BUCKETS` maps a purchase to one of the
+  Accessories DB's category buckets (Power / Cable / Connectivity / Storage /
+  Case·Carry / Audio / Input / Capture / Display), and `techAccessoryCategory()`
+  decides whether a purchase is a tech accessory routed to
+  `TECH_ACCESSORIES_DATABASE_ID` — deliberately excluding whole **devices** (a
+  console/laptop classifies as Electronics, not an accessory).
+- **How to change:** extend `TECH_BUCKETS` with the accessory keywords you buy; a
+  tech item matching no specific bucket falls to `Other`.
