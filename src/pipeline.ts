@@ -145,6 +145,31 @@ export function planUpdate(
   return statusRank(next) > statusRank(cur) ? "apply" : "regress";
 }
 
+// Accounts we've already alerted about an auth failure, so the daily-recurring
+// invalid_grant doesn't fire a Telegram ping every tick. Cleared per account on
+// its next successful poll. Module-scoped so it persists across ticks.
+const authAlerted = new Set<string>();
+
+/** A Gmail-auth failure (expired/revoked refresh token), vs a transient error. */
+function isAuthError(err: unknown): boolean {
+  return /invalid_grant|invalid_client|unauthorized|\b401\b/i.test(String(err));
+}
+
+/** Alert once (log + Telegram) that an account's Gmail token needs re-auth. */
+async function alertAuthOnce(label: string, err: unknown, deps: Deps): Promise<void> {
+  const { log, notifier } = deps;
+  if (authAlerted.has(label)) {
+    await log.error(`[${label}] Gmail auth still failing; account skipped this tick.`);
+    return;
+  }
+  authAlerted.add(label);
+  await log.error(`[${label}] Gmail auth failed (token expired or revoked): ${String(err)}`);
+  await notifier.notify(
+    `🔒 Order tracker: Gmail auth failed for "${label}". ` +
+      `Re-authorize with \`npm run auth -- ${label}\`.`,
+  );
+}
+
 /**
  * Run one poll across all accounts: fetch Notion rows once, then process each
  * account's shipping + subscription jobs sequentially with per-job failure
@@ -181,7 +206,14 @@ export async function runTick(
   for (const [label, gmail] of gmailByLabel) {
     try {
       await runShipping(label, gmail, deps, ctx, state);
+      authAlerted.delete(label); // a successful poll clears any prior auth alert
     } catch (err) {
+      if (isAuthError(err)) {
+        // A dead/expired token fails every job for this account identically, and
+        // silently ("0 updates"). Alert once and skip the rest of its jobs.
+        await alertAuthOnce(label, err, deps);
+        continue;
+      }
       await log.error(`[${label}] shipping job failed: ${String(err)}`);
     }
     try {
@@ -256,6 +288,26 @@ async function runShipping(
   await log.info(`[${label}] Processing ${messages.length} shipping message(s).`);
 
   for (const msg of messages) {
+    let update = parseMessage(msg);
+
+    // Cap-aware deferral: a message that needs the LLM merely to be *classified*
+    // (the regex found no status) is lost if we advance the watermark past it
+    // while the per-tick LLM cap is spent. When the cap is exhausted, stop here
+    // WITHOUT advancing — the backlog resumes next tick over a few ticks. (Only
+    // the status-gap case; a classification-only gap still records the status,
+    // so losing its category to the cap is acceptable.)
+    if (
+      !update &&
+      deps.llm &&
+      !cfg.DRY_RUN &&
+      ctx.llmCalls >= cfg.MAX_LLM_CALLS_PER_TICK
+    ) {
+      await log.warn(
+        `[${label}] LLM cap reached; deferring "${msg.subject}" and the rest to next tick.`,
+      );
+      break;
+    }
+
     // Advance the watermark BEFORE any branch, skip, LLM call, or failure, so a
     // message is processed at most once ever — including negative LLM verdicts,
     // which must never trigger a second paid call on a later tick.
@@ -264,7 +316,6 @@ async function runShipping(
       msg.internalDateMs,
     );
 
-    let update = parseMessage(msg);
     if (!update) {
       // Status gap: the regex couldn't classify this email — ask the LLM.
       if (!deps.llm) {
