@@ -356,26 +356,38 @@ async function applyShipmentUpdate(
   const categoryToSet = update.category && !row.category ? update.category : undefined;
   const newTags = update.tags.filter((t) => !row.tags.includes(t));
   const tagsToSet = newTags.length > 0 ? [...row.tags, ...newTags] : undefined;
+  // ETA: write a parsed ETA only when the row has none — an existing/manual ETA
+  // is authoritative and never overwritten. Never on a Delivered email.
+  const etaToSet =
+    update.etaMs && !row.eta && update.status !== "Delivered" ? update.etaMs : undefined;
+  // Delivered-on: stamp the email's date on the transition into Delivered.
+  const deliveredToSet =
+    update.status === "Delivered" && decision === "apply" ? update.deliveredMs : undefined;
+  const nothingElse = !categoryToSet && !tagsToSet && !etaToSet && !deliveredToSet;
 
   if (decision === "regress") {
     await log.warn(
       `[${label}] Skipped regression for "${row.book}": ${row.status || "(unset)"} ✗→ ${update.status}.`,
     );
-  } else if (decision === "apply" && !statusWritable && !categoryToSet && !tagsToSet) {
+  } else if (decision === "apply" && !statusWritable && nothingElse) {
     await log.info(
       `[${label}] No DB status for "${update.status}"; left "${row.book}" unchanged.`,
     );
-  } else if (decision === "noop" && !categoryToSet && !tagsToSet) {
+  } else if (decision === "noop" && nothingElse) {
     await log.info(`[${label}] No change: "${row.book}" already ${update.status}.`);
   }
 
-  if (!willSetStatus && !categoryToSet && !tagsToSet) return; // nothing to write
+  if (!willSetStatus && nothingElse) return; // nothing to write
+
+  const isoDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
   if (cfg.DRY_RUN) {
     const parts: string[] = [];
     if (willSetStatus) parts.push(`status → ${update.status}`);
     if (categoryToSet) parts.push(`category → ${categoryToSet}`);
     if (tagsToSet) parts.push(`+tags [${newTags.join(", ")}]`);
+    if (etaToSet) parts.push(`ETA → ${isoDay(etaToSet)}`);
+    if (deliveredToSet) parts.push(`delivered → ${isoDay(deliveredToSet)}`);
     await log.info(`[${label}] [dry-run] would set "${row.book}": ${parts.join(", ")}.`);
     return;
   }
@@ -385,6 +397,8 @@ async function applyShipmentUpdate(
       status: willSetStatus ? update.status : undefined,
       category: categoryToSet,
       tags: tagsToSet,
+      etaMs: etaToSet,
+      deliveredMs: deliveredToSet,
     });
     ctx.updates++;
     if (willSetStatus) {
@@ -396,11 +410,14 @@ async function applyShipmentUpdate(
     }
     if (categoryToSet) row.category = categoryToSet;
     if (tagsToSet) row.tags = tagsToSet;
+    if (etaToSet) row.eta = isoDay(etaToSet); // authoritative once set, this tick
     if (!willSetStatus) {
       const bits: string[] = [];
       if (categoryToSet) bits.push(`category ${categoryToSet}`);
       if (newTags.length) bits.push(`tags [${newTags.join(", ")}]`);
-      if (bits.length) await log.info(`[${label}] Tagged "${row.book}": ${bits.join("; ")}.`);
+      if (etaToSet) bits.push(`ETA ${isoDay(etaToSet)}`);
+      if (deliveredToSet) bits.push(`delivered ${isoDay(deliveredToSet)}`);
+      if (bits.length) await log.info(`[${label}] Updated "${row.book}": ${bits.join("; ")}.`);
     }
   } catch (err) {
     await log.error(`[${label}] Failed updating "${row.book}": ${String(err)}`);
@@ -868,7 +885,11 @@ async function runEbay(
       continue;
     }
     try {
-      await general.setStatus(row.pageId, ev.status);
+      await general.setStatus(
+        row.pageId,
+        ev.status,
+        ev.status === "Delivered" ? msg.internalDateMs : undefined,
+      );
       row.status = ev.status;
       await log.info(`[${label}] eBay order ${ev.orderId} → ${ev.status}.`);
     } catch (err) {
@@ -936,7 +957,11 @@ async function runGeneralLifecycle(
     }
 
     try {
-      await general.setStatus(row.pageId, ev.status);
+      await general.setStatus(
+        row.pageId,
+        ev.status,
+        ev.status === "Delivered" ? msg.internalDateMs : undefined,
+      );
       row.status = ev.status; // keep the map current for later mail this tick
       await log.info(`[${label}] Order ${ev.orderId} → ${ev.status}.`);
     } catch (err) {

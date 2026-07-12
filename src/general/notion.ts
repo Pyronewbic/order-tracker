@@ -108,15 +108,19 @@ export class GeneralNotionClient {
 
   /**
    * Advance an order's lifecycle Status (Shipped/Delivered/Cancelled/Returned).
-   * Unknown select options are auto-created by the REST API on first write.
+   * Unknown select options are auto-created by the REST API on first write. On a
+   * →Delivered transition, `deliveredMs` (the delivering email's date) is stamped
+   * on the "Delivered on" column so actual arrival is recorded alongside status.
    */
-  async setStatus(pageId: string, status: string): Promise<void> {
+  async setStatus(pageId: string, status: string, deliveredMs?: number): Promise<void> {
+    const properties: Record<string, unknown> = { Status: { select: { name: status } } };
+    if (deliveredMs && status === "Delivered") {
+      properties["Delivered on"] = { date: { start: isoDate(deliveredMs) } };
+    }
     await withRetry(() =>
       this.notion.pages.update({
         page_id: pageId,
-        properties: { Status: { select: { name: status } } } as Parameters<
-          Client["pages"]["update"]
-        >[0]["properties"],
+        properties: properties as Parameters<Client["pages"]["update"]>[0]["properties"],
       }),
     );
   }

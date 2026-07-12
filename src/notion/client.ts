@@ -15,20 +15,31 @@ export interface OrderRow {
   category: string;
   /** Current "Tags" multi-select values (names), or [] if unset/absent. */
   tags: string[];
+  /** Current "ETA" date (ISO `YYYY-MM-DD`), or "" if unset. A non-empty value is
+   * treated as authoritative — the tracker never overwrites it. */
+  eta: string;
 }
 
-/** A page update: set any of Status, Category, and Tags. */
+/** A page update: set any of Status, Category, Tags, ETA, Delivered-on. */
 export interface RowUpdate {
   status?: OrderStatus;
   category?: OrderCategory;
   /** Full desired tag set (the caller has already merged with existing tags). */
   tags?: string[];
+  /** Delivery ETA to write (epoch ms → date-only). */
+  etaMs?: number;
+  /** Actual delivered-on date to write (epoch ms → date-only). */
+  deliveredMs?: number;
 }
 
 // Notion's API responses are loosely typed; validate the slice we depend on.
 const richTextItem = z.object({ plain_text: z.string() }).passthrough();
 const selectValue = z
   .object({ select: z.object({ name: z.string() }).nullable() })
+  .passthrough();
+
+const dateValue = z
+  .object({ date: z.object({ start: z.string() }).nullable() })
   .passthrough();
 
 const pageSchema = z
@@ -45,9 +56,15 @@ const pageSchema = z
         .object({ multi_select: z.array(z.object({ name: z.string() }).passthrough()) })
         .passthrough()
         .optional(),
+      ETA: dateValue.optional(),
     }),
   })
   .passthrough();
+
+/** ISO date-only string (YYYY-MM-DD) for a Notion date property. */
+function isoDate(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
 
 export class NotionClient {
   private readonly notion: Client;
@@ -103,6 +120,7 @@ export class NotionClient {
           status: fromNotionStatus(props.Status?.select?.name ?? ""),
           category: props.Category?.select?.name ?? "",
           tags: (props.Tags?.multi_select ?? []).map((t) => t.name),
+          eta: props.ETA?.date?.start ?? "",
         });
       }
 
@@ -128,6 +146,12 @@ export class NotionClient {
     if (update.category) properties.Category = { select: { name: update.category } };
     if (update.tags && update.tags.length > 0) {
       properties.Tags = { multi_select: update.tags.map((name) => ({ name })) };
+    }
+    if (update.etaMs) properties.ETA = { date: { start: isoDate(update.etaMs) } };
+    // "Delivered on" must exist on the DB — Notion rejects an unknown property
+    // key — so it is provisioned as a documented column on the Collection DB.
+    if (update.deliveredMs) {
+      properties["Delivered on"] = { date: { start: isoDate(update.deliveredMs) } };
     }
     if (Object.keys(properties).length === 0) return;
 
