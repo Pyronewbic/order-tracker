@@ -34,8 +34,11 @@ out of scope (a separate app, Collectr, owns that).
 - **Notion sync** — statuses only ever advance (a late email can't un-deliver a
   package); manual edits are never clobbered.
 - **Telegram notifications** — a push on each status change, plus a scheduled
-  **daily digest** of everything still in motion (Ordered, In Transit, Arriving
-  Soon, and Delayed). Optional.
+  **daily digest** of everything still on the way, soonest **ETA** first, with an
+  *arriving soon* (next 3 days) section. Optional.
+- **Delivery dates** — parses a delivery **ETA** from shipment mail (feeding a
+  Notion calendar) and stamps the actual **delivered-on** date when an order
+  arrives.
 - **Subscription detection** — flags recurring/renewal charges parsed from
   receipt mail. Optional.
 - **Forwarder tracking** — logs packages held at a forwarding service (arrival,
@@ -43,7 +46,9 @@ out of scope (a separate app, Collectr, owns that).
 - **Digital game tracking** — logs eShop and Amazon JP digital purchases,
   region-aware, into a standalone DB. Optional.
 - **General purchases** — parses Amazon (and eBay) order confirmations into a
-  general Purchases DB for everything that isn't a tracked book/game. Optional.
+  general Purchases DB for everything that isn't a tracked book/game, and
+  captures unmatched non-book **shipment** mail there too (keyed by order #), so
+  those items aren't dropped. Optional.
 - **Spend summary** — rolls per-month USD spend across every DB into one
   cross-source total (multi-currency, converted via daily FX). Optional.
 - **Multiple inboxes** — polls any number of Gmail accounts into the one Notion
@@ -115,6 +120,20 @@ A few things to know before you rely on it:
 - **Enabling the LLM fallback sends email content off-host.** When on, the
   subject and truncated body of mail the rules can't classify are sent to
   Anthropic's API. It's opt-in and off by default.
+
+## Known limitations
+
+- **Shipping mail matches the curated book DB first.** A non-book shipment is
+  captured in the General DB only when it carries a stable order number;
+  tracking-only carrier mail with no order number can't be keyed and is dropped.
+- **A title-less lifecycle-only order isn't auto-created.** If the first thing
+  seen for an order is an item-less "Delivered … Order # …" mail (no prior
+  shipment/confirmation), it's ignored rather than routed — it could be a
+  book/game order owned by a domain DB. A titled shipment or a confirmation
+  creates the row; later lifecycle mail then advances it.
+- **Forwarder shipments can't be auto-marked Shipped.** ForwardMe's outbound
+  emails carry no package code, so a consolidated shipment is logged only; set
+  the package(s) to `Shipped` yourself.
 
 ## License
 

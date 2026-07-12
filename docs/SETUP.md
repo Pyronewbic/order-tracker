@@ -171,6 +171,8 @@ case-sensitive**.
 | `Status` | Select | Shipment status. See the status mapping below. |
 | `Category` | Select | Item type, e.g. Game / Book / Accessory / Electronics / Digital / Other. |
 | `Tags`   | Multi-select | Optional; the tracker merges tags, never clears them. |
+| `ETA` | Date | Delivery ETA parsed from shipment mail; drives the Arrivals calendar (and doubles as the FX date for the spend summary). The tracker writes it only when the row has none, so a manual ETA is authoritative. |
+| `Delivered on` | Date | Actual delivered-on date, stamped when an order is marked Delivered. |
 
 **How Status is actually written (the mapping layer).** The tracker reasons in a
 shipment vocabulary but only writes a subset back to Notion:
@@ -203,8 +205,10 @@ database also needs these columns, which the spend summary reads and writes:
 | --- | --- | --- |
 | `Price` | Text (rich text) | Free-text price like `₹499` / `¥1980` / `$12`. The **currency symbol drives the currency**; with no symbol the row is treated as USD. Rows with no `Price` are skipped. |
 | `Source` | Select | `Amazon US` / `Amazon IN` / `Amazon JP` — a currency fallback when `Price` has no symbol. |
-| `ETA` | Date | Used as the FX conversion date; falls back to the row's created time if unset. |
 | `Spend (USD)` | Number | **Written by the tracker** — the per-row USD amount, refreshed each run. |
+
+(`ETA` is already in the base schema above; the spend summary reuses it as the FX
+conversion date, falling back to the row's created time if unset.)
 
 ### 4d. Share each database with the integration
 
@@ -244,6 +248,8 @@ not pre-fill its options.
 | `Items` | Number |
 | `Date` | Date |
 | `Status` | Select |
+| `ETA` | Date (delivery ETA for routed shipment items; drives the Arrivals calendar) |
+| `Delivered on` | Date (actual delivered-on date) |
 
 **Digital Games DB** — `GAMES_DATABASE_ID`:
 
