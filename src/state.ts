@@ -65,7 +65,12 @@ const stateSchema = z
         ebayLastMs: 0,
       };
     }
-    return { accounts, links: s.links, orderLinks: s.orderLinks, subscriptions: s.subscriptions };
+    return {
+      accounts,
+      links: s.links,
+      orderLinks: s.orderLinks,
+      subscriptions: s.subscriptions,
+    };
   });
 
 export type State = z.infer<typeof stateSchema>;

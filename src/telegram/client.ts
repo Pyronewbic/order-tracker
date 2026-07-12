@@ -51,12 +51,7 @@ export function createNotifier(
   if (!cfg.TELEGRAM_BOT_TOKEN || !cfg.TELEGRAM_CHAT_ID) {
     return new NoopNotifier();
   }
-  return new TelegramNotifier(
-    cfg.TELEGRAM_BOT_TOKEN,
-    cfg.TELEGRAM_CHAT_ID,
-    log,
-    redact,
-  );
+  return new TelegramNotifier(cfg.TELEGRAM_BOT_TOKEN, cfg.TELEGRAM_CHAT_ID, log, redact);
 }
 
 class NoopNotifier implements Notifier {
@@ -75,7 +70,9 @@ class DryRunNotifier implements Notifier {
     source?: string,
   ): Promise<void> {
     const prefix = source ? `[${source}] ` : "";
-    await this.log.info(`[dry-run] would notify: ${prefix}${book} → ${status} (${detail})`);
+    await this.log.info(
+      `[dry-run] would notify: ${prefix}${book} → ${status} (${detail})`,
+    );
   }
 
   async notify(text: string): Promise<void> {
@@ -141,8 +138,5 @@ export class TelegramNotifier implements Notifier {
 
 /** Escape the characters significant to Telegram's HTML parse mode. */
 export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

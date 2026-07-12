@@ -14,7 +14,8 @@ export interface ItemSignal {
 // curation rather than mislabelled. The keyword lists are intentionally easy to
 // extend; arbitrary game titles need the optional LLM categoriser to be reliable.
 
-const DIGITAL_SENDER = /digital-?no-?reply@|digitalorder-?update@|digital-no-reply|digitalorder/i;
+const DIGITAL_SENDER =
+  /digital-?no-?reply@|digitalorder-?update@|digital-no-reply|digitalorder/i;
 const DIGITAL_TEXT =
   /\b(online code|download code|digital code|redemption code|redeem code|digital download|prepaid|gift ?card|e-?gift)\b|オンラインコード|ダウンロード版|引き換えコード|プリペイド|ギフト券/i;
 
@@ -74,7 +75,8 @@ export function tagsFor(signal: ItemSignal): string[] {
   for (const [re, tag] of FRANCHISES) if (re.test(hay)) tags.add(tag);
   if (/\bpre-?orders?\b|予約/i.test(hay)) tags.add("Preorder");
   if (/\b(guide|encyclopedia|art ?book)\b/i.test(hay)) tags.add("Guide");
-  if (/\b(limited|collector'?s|special|deluxe) edition\b/i.test(hay)) tags.add("Limited Edition");
+  if (/\b(limited|collector'?s|special|deluxe) edition\b/i.test(hay))
+    tags.add("Limited Edition");
   if (/\bswitch 2\b/i.test(hay)) tags.add("Switch 2");
   if (/\bamiibo\b/i.test(hay)) tags.add("amiibo");
   if (DIGITAL_SENDER.test(signal.from) || DIGITAL_TEXT.test(hay)) tags.add("Digital");

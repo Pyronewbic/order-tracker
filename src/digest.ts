@@ -12,7 +12,20 @@ import { ORDER_STATUSES, type OrderStatus } from "./types.js";
 const ACTIVE: OrderStatus[] = ["Arriving Soon", "In Transit", "Ordered"];
 
 const DAY_MS = 86_400_000;
-const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MON = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
 
 const isOrderStatus = (s: string): s is OrderStatus =>
   (ORDER_STATUSES as readonly string[]).includes(s);
@@ -90,7 +103,9 @@ export async function sendDigest(
     lines.push(...sorted.map(fmt));
   }
 
-  await log.info(`Daily digest: ${active.length} active order(s), ${soon.size} arriving soon.`);
+  await log.info(
+    `Daily digest: ${active.length} active order(s), ${soon.size} arriving soon.`,
+  );
   await notifier.notify(
     `📬 <b>Daily digest</b> — ${active.length} on the way\n${lines.join("\n")}`,
   );

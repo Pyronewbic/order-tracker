@@ -63,12 +63,17 @@ async function main(): Promise<void> {
   // here disables just this feature rather than taking down the book tracker.
   let forwarder: ForwarderNotionClient | null = null;
   if (cfg.FORWARDER_DATABASE_ID) {
-    const client = new ForwarderNotionClient(cfg.NOTION_API_KEY, cfg.FORWARDER_DATABASE_ID);
+    const client = new ForwarderNotionClient(
+      cfg.NOTION_API_KEY,
+      cfg.FORWARDER_DATABASE_ID,
+    );
     try {
       await client.verifyAccess();
       forwarder = client;
     } catch (err) {
-      await log.error(`Forwarder DB access check failed; forwarder tracking disabled: ${String(err)}`);
+      await log.error(
+        `Forwarder DB access check failed; forwarder tracking disabled: ${String(err)}`,
+      );
     }
   }
 
@@ -81,7 +86,9 @@ async function main(): Promise<void> {
       await client.verifyAccess();
       games = client;
     } catch (err) {
-      await log.error(`Digital-games DB access check failed; games tracking disabled: ${String(err)}`);
+      await log.error(
+        `Digital-games DB access check failed; games tracking disabled: ${String(err)}`,
+      );
     }
   }
 
@@ -93,7 +100,9 @@ async function main(): Promise<void> {
       await client.verifyAccess();
       general = client;
     } catch (err) {
-      await log.error(`General-purchases DB access check failed; disabled: ${String(err)}`);
+      await log.error(
+        `General-purchases DB access check failed; disabled: ${String(err)}`,
+      );
     }
   }
 
@@ -112,7 +121,9 @@ async function main(): Promise<void> {
       await client.verifyAccess();
       summary = client;
     } catch (err) {
-      await log.error(`Spend-summary DB access check failed; summary disabled: ${String(err)}`);
+      await log.error(
+        `Spend-summary DB access check failed; summary disabled: ${String(err)}`,
+      );
     }
   }
 
@@ -124,11 +135,23 @@ async function main(): Promise<void> {
     if (cfg.ANTHROPIC_API_KEY) {
       llm = new LlmParser(cfg.ANTHROPIC_API_KEY, cfg.LLM_MODEL);
     } else {
-      await log.warn("LLM_FALLBACK is set but ANTHROPIC_API_KEY is missing; fallback disabled.");
+      await log.warn(
+        "LLM_FALLBACK is set but ANTHROPIC_API_KEY is missing; fallback disabled.",
+      );
     }
   }
 
-  const deps: Deps = { cfg, notion, notifier, log, llm, forwarder, games, summary, general };
+  const deps: Deps = {
+    cfg,
+    notion,
+    notifier,
+    log,
+    llm,
+    forwarder,
+    games,
+    summary,
+    general,
+  };
 
   // Guard against overlapping runs if a poll outlives its interval.
   let running = false;

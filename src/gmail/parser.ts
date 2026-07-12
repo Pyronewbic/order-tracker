@@ -150,11 +150,27 @@ function extractOrderId(msg: ParsedMessage): string | undefined {
 }
 
 const MONTHS: Record<string, number> = {
-  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+  jan: 0,
+  feb: 1,
+  mar: 2,
+  apr: 3,
+  may: 4,
+  jun: 5,
+  jul: 6,
+  aug: 7,
+  sep: 8,
+  oct: 9,
+  nov: 10,
+  dec: 11,
 };
 const WEEKDAY: Record<string, number> = {
-  sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6,
+  sun: 0,
+  mon: 1,
+  tue: 2,
+  wed: 3,
+  thu: 4,
+  fri: 5,
+  sat: 6,
 };
 const DAY_MS = 86_400_000;
 
@@ -164,7 +180,7 @@ const DAY_MS = 86_400_000;
  * is examined, so an unrelated date (an order date, a price, a copyright year)
  * can't be misread. Absolute dates are tried first, then relative words
  * (today / tomorrow / weekday). Returns undefined when no plausible date is
- * found; a result is accepted only within [anchor − 1 day, anchor + 60 days],
+ * found; a result is accepted only within [anchor − 1 day, anchor + 120 days],
  * which rejects past dates and year misparses. Best-effort by design — a manual
  * ETA always wins at the write layer.
  */

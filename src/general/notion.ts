@@ -34,12 +34,17 @@ const rowSchema = z
     id: z.string(),
     properties: z.object({
       "Order #": txtVal.optional(),
-      Status: z.object({ select: z.object({ name: z.string() }).nullable() }).passthrough().optional(),
+      Status: z
+        .object({ select: z.object({ name: z.string() }).nullable() })
+        .passthrough()
+        .optional(),
     }),
   })
   .passthrough();
 
-const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({ rich_text: [{ text: { content: s } }] });
+const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({
+  rich_text: [{ text: { content: s } }],
+});
 const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
 /**
@@ -59,7 +64,9 @@ export class GeneralNotionClient {
 
   async verifyAccess(): Promise<void> {
     try {
-      await withRetry(() => this.notion.databases.retrieve({ database_id: this.databaseId }));
+      await withRetry(() =>
+        this.notion.databases.retrieve({ database_id: this.databaseId }),
+      );
     } catch (err) {
       throw new Error(
         `Cannot access general-purchases database ${this.databaseId}: ${String(err)}. ` +
@@ -74,7 +81,11 @@ export class GeneralNotionClient {
     let cursor: string | undefined;
     do {
       const res = await withRetry(() =>
-        this.notion.databases.query({ database_id: this.databaseId, start_cursor: cursor, page_size: 100 }),
+        this.notion.databases.query({
+          database_id: this.databaseId,
+          start_cursor: cursor,
+          page_size: 100,
+        }),
       );
       for (const raw of res.results) {
         const parsed = rowSchema.safeParse(raw);
@@ -141,7 +152,10 @@ export class GeneralNotionClient {
     );
   }
 
-  private buildProperties(u: GeneralUpdate, includeStatus: boolean): Record<string, unknown> {
+  private buildProperties(
+    u: GeneralUpdate,
+    includeStatus: boolean,
+  ): Record<string, unknown> {
     const p: Record<string, unknown> = {};
     if (u.item) p.Item = { title: [{ text: { content: u.item } }] };
     if (u.merchant) p.Merchant = { select: { name: u.merchant } };

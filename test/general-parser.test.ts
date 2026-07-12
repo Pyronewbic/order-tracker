@@ -43,12 +43,17 @@ test("parseOrderEmail splits multiple orders and picks the dominant item", () =>
 });
 
 test("parseOrderEmail returns [] for a non-order email", () => {
-  assert.deepEqual(parseOrderEmail(msg({ subject: "your weekly deals", body: "big savings" })), []);
+  assert.deepEqual(
+    parseOrderEmail(msg({ subject: "your weekly deals", body: "big savings" })),
+    [],
+  );
 });
 
 test("parseOrderEmail skips an order block with no parseable total", () => {
   const orders = parseOrderEmail(
-    msg({ body: "Order # 112-0000000-0000000 * Some Item Quantity: 1 (price on site) USD" }),
+    msg({
+      body: "Order # 112-0000000-0000000 * Some Item Quantity: 1 (price on site) USD",
+    }),
   );
   assert.deepEqual(orders, []);
 });

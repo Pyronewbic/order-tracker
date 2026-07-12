@@ -118,14 +118,11 @@ const envSchema = z
     // Hard cap on LLM calls per tick, summed across all accounts (cost bound).
     MAX_LLM_CALLS_PER_TICK: z.coerce.number().int().positive().default(10),
   })
-  .refine(
-    (env) => Boolean(env.TELEGRAM_BOT_TOKEN) === Boolean(env.TELEGRAM_CHAT_ID),
-    {
-      message:
-        "Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable Telegram, or neither to disable it.",
-      path: ["TELEGRAM_CHAT_ID"],
-    },
-  );
+  .refine((env) => Boolean(env.TELEGRAM_BOT_TOKEN) === Boolean(env.TELEGRAM_CHAT_ID), {
+    message:
+      "Set both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to enable Telegram, or neither to disable it.",
+    path: ["TELEGRAM_CHAT_ID"],
+  });
 
 export type Config = z.infer<typeof envSchema>;
 

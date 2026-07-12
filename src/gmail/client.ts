@@ -69,8 +69,7 @@ export class GmailClient {
     const headers = msg.payload?.headers ?? [];
 
     const header = (name: string): string =>
-      headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ??
-      "";
+      headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
 
     return {
       id,
@@ -96,10 +95,7 @@ function extractBody(payload: gmail_v1.Schema$MessagePart | undefined): string {
   return "";
 }
 
-function findPart(
-  part: gmail_v1.Schema$MessagePart,
-  mime: string,
-): string | undefined {
+function findPart(part: gmail_v1.Schema$MessagePart, mime: string): string | undefined {
   if (part.mimeType === mime && part.body?.data) return part.body.data;
   for (const child of part.parts ?? []) {
     const found = findPart(child, mime);

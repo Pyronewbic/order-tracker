@@ -1,10 +1,7 @@
 import type { RuntimeConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { accountState, type State } from "./state.js";
-import {
-  GmailClient,
-  type ParsedMessage,
-} from "./gmail/client.js";
+import { GmailClient, type ParsedMessage } from "./gmail/client.js";
 import { buildUpdate, parseMessage, type ShipmentUpdate } from "./gmail/parser.js";
 import type { LlmClassification, LlmParser } from "./gmail/llm-parser.js";
 import { NotionClient, type OrderRow } from "./notion/client.js";
@@ -163,7 +160,9 @@ async function alertAuthOnce(label: string, err: unknown, deps: Deps): Promise<v
     return;
   }
   authAlerted.add(label);
-  await log.error(`[${label}] Gmail auth failed (token expired or revoked): ${String(err)}`);
+  await log.error(
+    `[${label}] Gmail auth failed (token expired or revoked): ${String(err)}`,
+  );
   await notifier.notify(
     `🔒 Order tracker: Gmail auth failed for "${label}". ` +
       `Re-authorize with \`npm run auth -- ${label}\`.`,
@@ -311,10 +310,7 @@ async function runShipping(
     // Advance the watermark BEFORE any branch, skip, LLM call, or failure, so a
     // message is processed at most once ever — including negative LLM verdicts,
     // which must never trigger a second paid call on a later tick.
-    watermark.lastProcessedMs = Math.max(
-      watermark.lastProcessedMs,
-      msg.internalDateMs,
-    );
+    watermark.lastProcessedMs = Math.max(watermark.lastProcessedMs, msg.internalDateMs);
 
     if (!update) {
       // Status gap: the regex couldn't classify this email — ask the LLM.
@@ -353,7 +349,9 @@ async function runShipping(
       if (update.category === "Digital") {
         await log.info(`[${label}] Digital order, not tracked: "${msg.subject}".`);
       } else {
-        await log.warn(`[${label}] No Notion match for ${ident} (subject: "${msg.subject}").`);
+        await log.warn(
+          `[${label}] No Notion match for ${ident} (subject: "${msg.subject}").`,
+        );
       }
       continue;
     }
@@ -434,7 +432,9 @@ async function applyShipmentUpdate(
     update.etaMs && !row.eta && update.status !== "Delivered" ? update.etaMs : undefined;
   // Delivered-on: stamp the email's date on the transition into Delivered.
   const deliveredToSet =
-    update.status === "Delivered" && decision === "apply" ? update.deliveredMs : undefined;
+    update.status === "Delivered" && decision === "apply"
+      ? update.deliveredMs
+      : undefined;
   const nothingElse = !categoryToSet && !tagsToSet && !etaToSet && !deliveredToSet;
 
   if (decision === "regress") {
@@ -489,7 +489,8 @@ async function applyShipmentUpdate(
       if (newTags.length) bits.push(`tags [${newTags.join(", ")}]`);
       if (etaToSet) bits.push(`ETA ${isoDay(etaToSet)}`);
       if (deliveredToSet) bits.push(`delivered ${isoDay(deliveredToSet)}`);
-      if (bits.length) await log.info(`[${label}] Updated "${row.book}": ${bits.join("; ")}.`);
+      if (bits.length)
+        await log.info(`[${label}] Updated "${row.book}": ${bits.join("; ")}.`);
     }
   } catch (err) {
     await log.error(`[${label}] Failed updating "${row.book}": ${String(err)}`);
@@ -525,7 +526,9 @@ async function callLlm(
   if (ctx.llmCalls >= cfg.MAX_LLM_CALLS_PER_TICK) {
     if (!ctx.llmCapAlerted) {
       ctx.llmCapAlerted = true;
-      await log.warn(`LLM call cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick) reached; skipping further LLM calls this tick.`);
+      await log.warn(
+        `LLM call cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick) reached; skipping further LLM calls this tick.`,
+      );
       await notifier.notify(
         `⚠️ Order tracker hit the LLM cap (${cfg.MAX_LLM_CALLS_PER_TICK}/tick). ` +
           `Remaining unclassified mail was skipped — check your shipping query.`,
@@ -601,7 +604,9 @@ async function runForwarder(
     const ev = parseForwarderEmail(msg);
     if (!ev) continue;
     if (ev.kind === "outbound") {
-      await log.info(`[${label}] Forwarder shipment left the warehouse: "${msg.subject}".`);
+      await log.info(
+        `[${label}] Forwarder shipment left the warehouse: "${msg.subject}".`,
+      );
       continue;
     }
 
@@ -610,7 +615,9 @@ async function runForwarder(
     const existing = packages.get(code);
 
     if (existing && isTerminalPackageStatus(existing.status)) {
-      await log.info(`[${label}] Package ${code} already ${existing.status}; leaving as-is.`);
+      await log.info(
+        `[${label}] Package ${code} already ${existing.status}; leaving as-is.`,
+      );
       continue;
     }
 
@@ -634,7 +641,9 @@ async function runForwarder(
         await log.info(`[${label}] New forwarder package ${code}.`);
       }
     } catch (err) {
-      await log.error(`[${label}] Failed upserting forwarder package ${code}: ${String(err)}`);
+      await log.error(
+        `[${label}] Failed upserting forwarder package ${code}: ${String(err)}`,
+      );
     }
   }
 }
@@ -687,7 +696,9 @@ async function runGames(
 
     const amount = ev.price ? parseAmount(ev.price) : null;
     const usd =
-      amount != null ? await toUSD(amount, currencyFor(ev.platform), ev.receivedMs) : null;
+      amount != null
+        ? await toUSD(amount, currencyFor(ev.platform), ev.receivedMs)
+        : null;
     const update: GameUpdate = {
       status: ev.status,
       platform: ev.platform,
@@ -709,11 +720,15 @@ async function runGames(
       if (existing) {
         if (existing.status === ev.status) delete update.status;
         await games.updateGame(existing.pageId, update);
-        await log.info(`[${label}] Updated game "${ev.title}" (${ev.platform}, ${ev.status}).`);
+        await log.info(
+          `[${label}] Updated game "${ev.title}" (${ev.platform}, ${ev.status}).`,
+        );
       } else {
         const pageId = await games.createGame(ev.title, update);
         rows.set(key, { pageId, key, status: ev.status });
-        await log.info(`[${label}] New game "${ev.title}" (${ev.platform}, ${ev.status}).`);
+        await log.info(
+          `[${label}] New game "${ev.title}" (${ev.platform}, ${ev.status}).`,
+        );
       }
     } catch (err) {
       await log.error(`[${label}] Failed upserting game "${ev.title}": ${String(err)}`);
@@ -789,7 +804,9 @@ async function routeToGeneral(
         await general.setStatus(existing.pageId, gStatus, deliveredMs);
         existing.status = gStatus;
         ctx.updates++;
-        await log.info(`[${label}] General order ${orderId} → ${gStatus} (from shipping).`);
+        await log.info(
+          `[${label}] General order ${orderId} → ${gStatus} (from shipping).`,
+        );
       }
     } else {
       const pageId = await general.createOrder(orderId, {
@@ -809,7 +826,9 @@ async function routeToGeneral(
     }
     return true;
   } catch (err) {
-    await log.error(`[${label}] Failed routing order ${orderId} to General: ${String(err)}`);
+    await log.error(
+      `[${label}] Failed routing order ${orderId} to General: ${String(err)}`,
+    );
     return false;
   }
 }
@@ -854,10 +873,14 @@ async function categorizeOrder(
   ) {
     ctx.llmCalls++;
     try {
-      const llmCat = await deps.llm.categorizeGeneral(dominantItem, merchant, [...GENERAL_LLM_CATEGORIES]);
+      const llmCat = await deps.llm.categorizeGeneral(dominantItem, merchant, [
+        ...GENERAL_LLM_CATEGORIES,
+      ]);
       if (llmCat) category = llmCat;
     } catch (err) {
-      await deps.log.warn(`LLM categorize failed for "${dominantItem.slice(0, 40)}": ${String(err)}`);
+      await deps.log.warn(
+        `LLM categorize failed for "${dominantItem.slice(0, 40)}": ${String(err)}`,
+      );
     }
   }
   return category === "Other" ? fallback : category;
@@ -909,7 +932,13 @@ async function runGeneralConfirmations(
   if (!general) return;
 
   const watermark = accountState(state, label);
-  const messages = await fetchNewMessages(gmail, cfg.GENERAL_QUERY, watermark.generalLastMs, log, label);
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.GENERAL_QUERY,
+    watermark.generalLastMs,
+    log,
+    label,
+  );
   if (messages.length === 0) {
     await log.info(`[${label}] No new purchase messages.`);
     return;
@@ -930,9 +959,17 @@ async function runGeneralConfirmations(
         continue;
       }
 
-      const category = await categorizeOrder(cats, o.dominantItem, o.merchant, "Other", deps, ctx);
+      const category = await categorizeOrder(
+        cats,
+        o.dominantItem,
+        o.merchant,
+        "Other",
+        deps,
+        ctx,
+      );
       const usd = await toUSD(o.total, o.currency, o.dateMs);
-      const label_ = o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem;
+      const label_ =
+        o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem;
       const update: GeneralUpdate = {
         item: label_,
         merchant: o.merchant,
@@ -957,9 +994,14 @@ async function runGeneralConfirmations(
         if (exists) {
           await general.updateOrder(exists.pageId, update);
         } else {
-          const pageId = await general.createOrder(o.orderId, { ...update, status: "Ordered" });
+          const pageId = await general.createOrder(o.orderId, {
+            ...update,
+            status: "Ordered",
+          });
           existing.set(o.orderId, { pageId, orderId: o.orderId, status: "Ordered" });
-          await log.info(`[${label}] New purchase ${o.orderId}: "${o.dominantItem.slice(0, 40)}" (${category}).`);
+          await log.info(
+            `[${label}] New purchase ${o.orderId}: "${o.dominantItem.slice(0, 40)}" (${category}).`,
+          );
         }
       } catch (err) {
         await log.error(`[${label}] Failed upserting order ${o.orderId}: ${String(err)}`);
@@ -989,7 +1031,13 @@ async function runEbay(
   if (!general) return;
 
   const watermark = accountState(state, label);
-  const messages = await fetchNewMessages(gmail, cfg.EBAY_QUERY, watermark.ebayLastMs, log, label);
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.EBAY_QUERY,
+    watermark.ebayLastMs,
+    log,
+    label,
+  );
   if (messages.length === 0) {
     await log.info(`[${label}] No new eBay messages.`);
     return;
@@ -1012,7 +1060,14 @@ async function runEbay(
         const cats = order.itemNames.map((n) =>
           classifyItem({ itemName: n, from: msg.from, subject: msg.subject }),
         );
-        const category = await categorizeOrder(cats, order.dominantItem, "eBay", "Collectibles", deps, ctx);
+        const category = await categorizeOrder(
+          cats,
+          order.dominantItem,
+          "eBay",
+          "Collectibles",
+          deps,
+          ctx,
+        );
         const usd = await toUSD(order.total, order.currency, order.dateMs);
         const pageId = await general.createOrder(order.orderId, {
           item: order.dominantItem,
@@ -1025,10 +1080,18 @@ async function runEbay(
           items: order.itemCount,
           status: "Ordered",
         });
-        existing.set(order.orderId, { pageId, orderId: order.orderId, status: "Ordered" });
-        await log.info(`[${label}] New eBay order ${order.orderId}: "${order.dominantItem.slice(0, 40)}".`);
+        existing.set(order.orderId, {
+          pageId,
+          orderId: order.orderId,
+          status: "Ordered",
+        });
+        await log.info(
+          `[${label}] New eBay order ${order.orderId}: "${order.dominantItem.slice(0, 40)}".`,
+        );
       } catch (err) {
-        await log.error(`[${label}] Failed creating eBay order ${order.orderId}: ${String(err)}`);
+        await log.error(
+          `[${label}] Failed creating eBay order ${order.orderId}: ${String(err)}`,
+        );
       }
       continue;
     }
@@ -1042,11 +1105,15 @@ async function runEbay(
     const decision = planGeneralUpdate(row.status, ev.status);
     if (decision === "noop") continue;
     if (decision === "regress") {
-      await log.info(`[${label}] eBay order ${ev.orderId}: ${row.status || "(unset)"} ✗→ ${ev.status} (skipped).`);
+      await log.info(
+        `[${label}] eBay order ${ev.orderId}: ${row.status || "(unset)"} ✗→ ${ev.status} (skipped).`,
+      );
       continue;
     }
     if (cfg.DRY_RUN) {
-      await log.info(`[${label}] [dry-run] would set eBay order ${ev.orderId} → ${ev.status}.`);
+      await log.info(
+        `[${label}] [dry-run] would set eBay order ${ev.orderId} → ${ev.status}.`,
+      );
       continue;
     }
     try {
@@ -1058,7 +1125,9 @@ async function runEbay(
       row.status = ev.status;
       await log.info(`[${label}] eBay order ${ev.orderId} → ${ev.status}.`);
     } catch (err) {
-      await log.error(`[${label}] Failed advancing eBay order ${ev.orderId}: ${String(err)}`);
+      await log.error(
+        `[${label}] Failed advancing eBay order ${ev.orderId}: ${String(err)}`,
+      );
     }
   }
 }
@@ -1117,7 +1186,9 @@ async function runGeneralLifecycle(
     }
 
     if (cfg.DRY_RUN) {
-      await log.info(`[${label}] [dry-run] would set order ${ev.orderId} → ${ev.status}.`);
+      await log.info(
+        `[${label}] [dry-run] would set order ${ev.orderId} → ${ev.status}.`,
+      );
       continue;
     }
 

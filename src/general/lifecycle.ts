@@ -6,7 +6,8 @@ import type { ParsedMessage } from "../gmail/client.js";
  * (the summary excludes terminal rows). `Ordered` is set when the order is first
  * created (from the confirmation email); the others come from post-order mail.
  */
-export type GeneralStatus = "Ordered" | "Shipped" | "Delivered" | "Cancelled" | "Returned";
+export type GeneralStatus =
+  "Ordered" | "Shipped" | "Delivered" | "Cancelled" | "Returned";
 
 /** A lifecycle event parsed from a post-order (shipment/delivery/cancel/refund) email. */
 export interface LifecycleEvent {
@@ -17,7 +18,10 @@ export interface LifecycleEvent {
 }
 
 /** Statuses that net-zero the spend and can't be superseded once set. */
-export const TERMINAL_GENERAL_STATUSES: readonly GeneralStatus[] = ["Cancelled", "Returned"];
+export const TERMINAL_GENERAL_STATUSES: readonly GeneralStatus[] = [
+  "Cancelled",
+  "Returned",
+];
 
 export function isTerminalGeneralStatus(status: string): boolean {
   return (TERMINAL_GENERAL_STATUSES as readonly string[]).includes(status);
@@ -35,7 +39,10 @@ const RANK: Record<string, number> = { Ordered: 1, Shipped: 2, Delivered: 3 };
  * Cancelled/Returned are terminal (nothing supersedes them) but can be set from
  * any non-terminal state. The rest form a monotonic ladder that only advances.
  */
-export function planGeneralUpdate(cur: string, next: GeneralStatus): "noop" | "regress" | "apply" {
+export function planGeneralUpdate(
+  cur: string,
+  next: GeneralStatus,
+): "noop" | "regress" | "apply" {
   if (next === cur) return "noop";
   if (isTerminalGeneralStatus(cur)) return "regress"; // terminal — nothing supersedes
   if (isTerminalGeneralStatus(next)) return "apply"; // cancel/return from any live state

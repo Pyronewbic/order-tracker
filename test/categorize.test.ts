@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { classifyItem, tagsFor } from "../src/categorize.js";
 
 /** Build an ItemSignal; item name is the main signal, sender/subject optional. */
-const sig = (itemName: string, from = "", subject = ""): { itemName: string; from: string; subject: string } => ({
+const sig = (
+  itemName: string,
+  from = "",
+  subject = "",
+): { itemName: string; from: string; subject: string } => ({
   itemName,
   from,
   subject,
@@ -11,7 +15,10 @@ const sig = (itemName: string, from = "", subject = ""): { itemName: string; fro
 
 test("classifyItem applies priority: Digital > Accessory > Book > Electronics > Game", () => {
   // Digital wins on a digital sender even when the name reads game-y.
-  assert.equal(classifyItem(sig("Zelda TotK", "digital-no-reply@amazon.co.jp")), "Digital");
+  assert.equal(
+    classifyItem(sig("Zelda TotK", "digital-no-reply@amazon.co.jp")),
+    "Digital",
+  );
   // Accessory beats Game ("case … Zelda amiibo" is an accessory, not a game).
   assert.equal(classifyItem(sig("Carrying case for Zelda amiibo")), "Accessory");
   // Book beats Game (a strategy guide is a Book even for a game franchise).
@@ -31,9 +38,7 @@ test("classifyItem detects digital goods from body text, not just the sender", (
 });
 
 test("tagsFor extracts franchise + attribute tags", () => {
-  const tags = tagsFor(
-    sig("The Legend of Zelda: TotK — Collector's Edition (preorder)"),
-  );
+  const tags = tagsFor(sig("The Legend of Zelda: TotK — Collector's Edition (preorder)"));
   assert(tags.includes("Zelda"));
   assert(tags.includes("Limited Edition"));
   assert(tags.includes("Preorder"));

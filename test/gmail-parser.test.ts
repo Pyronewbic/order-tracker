@@ -59,14 +59,20 @@ test("parseMessage returns null when no shipping status is present", () => {
 
 test("resolveEtaMs reads absolute and relative delivery dates", () => {
   assert.equal(isoDay(resolveEtaMs("Arriving Jan 20", ANCHOR)!), "2026-01-20");
-  assert.equal(isoDay(resolveEtaMs("Expected delivery: 3 February", ANCHOR)!), "2026-02-03");
+  assert.equal(
+    isoDay(resolveEtaMs("Expected delivery: 3 February", ANCHOR)!),
+    "2026-02-03",
+  );
   assert.equal(isoDay(resolveEtaMs("will be delivered tomorrow", ANCHOR)!), "2026-01-16");
   assert.equal(isoDay(resolveEtaMs("Out for delivery today", ANCHOR)!), "2026-01-15");
   // Thursday Jan 15 → next Monday is the 19th.
   assert.equal(isoDay(resolveEtaMs("Estimated delivery Monday", ANCHOR)!), "2026-01-19");
   // A date-only range ("Delivers Jul 17 – Jul 21") takes the start.
   const jul = Date.parse("2026-07-04T00:00:00Z");
-  assert.equal(isoDay(resolveEtaMs("Delivers Jul 17 – Jul 21 by Standard", jul)!), "2026-07-17");
+  assert.equal(
+    isoDay(resolveEtaMs("Delivers Jul 17 – Jul 21 by Standard", jul)!),
+    "2026-07-17",
+  );
 });
 
 test("resolveEtaMs returns undefined for no or implausible dates", () => {
@@ -78,7 +84,10 @@ test("resolveEtaMs returns undefined for no or implausible dates", () => {
 
 test("parseMessage attaches a parsed ETA for in-motion mail", () => {
   const u = parseMessage(
-    msg({ subject: "Arriving tomorrow: Super Mario Bros", from: "shipment-tracking@amazon.com" }),
+    msg({
+      subject: "Arriving tomorrow: Super Mario Bros",
+      from: "shipment-tracking@amazon.com",
+    }),
   );
   assert(u);
   assert.equal(u.status, "Arriving Soon");

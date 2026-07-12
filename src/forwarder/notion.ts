@@ -80,7 +80,9 @@ export class ForwarderNotionClient {
   /** Confirm the integration can read the database before the poll loop starts. */
   async verifyAccess(): Promise<void> {
     try {
-      await withRetry(() => this.notion.databases.retrieve({ database_id: this.databaseId }));
+      await withRetry(() =>
+        this.notion.databases.retrieve({ database_id: this.databaseId }),
+      );
     } catch (err) {
       throw new Error(
         `Cannot access forwarder database ${this.databaseId}: ${String(err)}. ` +
@@ -154,7 +156,8 @@ export class ForwarderNotionClient {
     const p: Record<string, unknown> = {};
     if (update.status) p.Status = { select: { name: update.status } };
     if (update.arrivedMs) p.Arrived = { date: { start: isoDate(update.arrivedMs) } };
-    if (update.disposalByMs) p["Disposal by"] = { date: { start: isoDate(update.disposalByMs) } };
+    if (update.disposalByMs)
+      p["Disposal by"] = { date: { start: isoDate(update.disposalByMs) } };
     if (update.from) p.From = text(update.from);
     if (update.contents) p.Contents = text(update.contents);
     if (update.declaredValue) p["Declared Value"] = text(update.declaredValue);
