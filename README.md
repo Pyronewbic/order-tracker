@@ -49,6 +49,10 @@ out of scope (a separate app, Collectr, owns that).
   general Purchases DB for everything that isn't a tracked book/game, and
   captures unmatched non-book **shipment** mail there too (keyed by order #), so
   those items aren't dropped. Optional.
+- **Tech accessories** — routes tech-accessory purchases (chargers, cables,
+  hubs, cases, audio, storage…) into a Tech Inventory Accessories DB instead —
+  self-categorized, with a delivery ladder (Ordered → Shipped → Arriving →
+  Owned). Whole devices are excluded. Optional.
 - **Spend summary** — rolls per-month USD spend across every DB into one
   cross-source total (multi-currency, converted via daily FX). Optional.
 - **Multiple inboxes** — polls any number of Gmail accounts into the one Notion
@@ -84,8 +88,8 @@ npm start                    # run the compiled build
 
 Requirements: **Node.js ≥ 20**, a Google Cloud OAuth client, and a Notion
 integration + database. The deterministic core has a unit suite (`npm test`,
-Node's built-in test runner); CI runs typecheck + lint + build + test on every
-push and pull request.
+Node's built-in test runner); CI runs typecheck + lint + format check + build +
+test on every push and pull request.
 
 The Quickstart above is deliberately terse — the OAuth consent-screen steps
 (publish to **Production** so refresh tokens don't expire), the exact Notion
