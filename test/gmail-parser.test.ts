@@ -102,3 +102,61 @@ test("parseMessage records a Delivered date, not an ETA", () => {
   assert.equal(u.etaMs, undefined);
   assert.equal(isoDay(u.deliveredMs!), "2026-01-15");
 });
+
+test("Amazon India out-for-delivery / arriving-today is treated as Delivered", () => {
+  // The OTP "Arriving Today" notice — no title, order # only in the body — is
+  // Amazon India's terminal signal; promote it to Delivered and stamp the date.
+  const otp = parseMessage(
+    msg({
+      subject: "Arriving Today: A one-time password is required for your Amazon delivery",
+      from: '"Amazon.in" <shipment-tracking@amazon.in>',
+      body: "Your package is out for delivery! Ordered Shipped Out for delivery Delivered Arriving today Order # 404-1557659-9225904",
+    }),
+  );
+  assert(otp);
+  assert.equal(otp.status, "Delivered");
+  assert.equal(otp.orderId, "404-1557659-9225904");
+  assert.equal(isoDay(otp.deliveredMs!), "2026-01-15");
+  assert.equal(otp.etaMs, undefined);
+
+  // The titled "Out for delivery" variant also resolves to Delivered.
+  const titled = parseMessage(
+    msg({ subject: "Out for delivery: Hyrule Historia", from: "order-update@amazon.in" }),
+  );
+  assert.equal(titled?.status, "Delivered");
+});
+
+test("final-mile promotion is scoped to Amazon India, same-day signals only", () => {
+  // .com out-for-delivery stays Arriving Soon — a real Delivered email follows.
+  assert.equal(
+    parseMessage(
+      msg({
+        subject: "Out for delivery: Super Mario Bros",
+        from: "shipment-tracking@amazon.com",
+      }),
+    )?.status,
+    "Arriving Soon",
+  );
+  // A future-dated IN arrival is not the final mile — stays Arriving Soon.
+  assert.equal(
+    parseMessage(
+      msg({
+        subject: "Arriving Wednesday: Hyrule Historia",
+        from: "shipment-tracking@amazon.in",
+      }),
+    )?.status,
+    "Arriving Soon",
+  );
+  // A plain IN "Shipped" email whose body lists the "Out for delivery" progress
+  // step must NOT be promoted — the gate reads the subject, not the body.
+  assert.equal(
+    parseMessage(
+      msg({
+        subject: "Shipped: Hyrule Historia",
+        from: "shipment-tracking@amazon.in",
+        body: "Ordered Shipped Out for delivery Delivered",
+      }),
+    )?.status,
+    "In Transit",
+  );
+});

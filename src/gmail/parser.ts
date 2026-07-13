@@ -280,6 +280,23 @@ export function buildUpdate(
 }
 
 /**
+ * True when a message is Amazon India's final-mile notice — an "Out for
+ * delivery" / "Arriving Today" (incl. the OTP-required variant) email. Amazon
+ * India, unlike .com/.jp, frequently sends no machine-readable "Delivered"
+ * email; this out-for-delivery notice is the last status signal an IN order
+ * emits, so it's treated as the delivery event (see {@link parseMessage}).
+ *
+ * Matched on the SUBJECT only: every Amazon tracking email's body carries the
+ * static progress-bar text "Ordered Shipped Out for delivery Delivered", so a
+ * body match would misfire on a plain "Shipped" email. The subject cleanly
+ * separates `Shipped:` from `Out for delivery:` / `Arriving Today:`.
+ */
+export function isAmazonIndiaFinalMile(msg: ParsedMessage): boolean {
+  if (!/@amazon\.in\b/i.test(msg.from)) return false;
+  return /\bout for delivery\b|\barriving today\b/i.test(msg.subject);
+}
+
+/**
  * Parse a Gmail message into a {@link ShipmentUpdate}, or null if no shipping
  * status can be determined. An email with a recognizable status but no item
  * name is still returned — it can be matched to a Notion row by tracking number
@@ -290,5 +307,14 @@ export function parseMessage(msg: ParsedMessage): ShipmentUpdate | null {
   const status =
     detectStatus(msg.subject) ?? detectStatus(msg.body) ?? detectStatus(msg.snippet);
   if (!status) return null;
+  // Amazon India rarely emits a "Delivered" email — its out-for-delivery /
+  // "Arriving Today" notice is the terminal signal, so promote it to Delivered
+  // (stamping that email's date as the delivered-on date) instead of leaving IN
+  // orders stalled at Arriving Soon. Scoped to a same-day final-mile subject:
+  // a future-dated "Arriving Wednesday" stays Arriving Soon, and .com/.jp keep
+  // waiting for their real Delivered email.
+  if (status === "Arriving Soon" && isAmazonIndiaFinalMile(msg)) {
+    return buildUpdate(msg, "Delivered");
+  }
   return buildUpdate(msg, status);
 }
