@@ -45,10 +45,10 @@ out of scope (a separate app, Collectr, owns that).
   contents, storage countdown) into a standalone Notion DB. Optional.
 - **Digital game tracking** — logs eShop and Amazon JP digital purchases,
   region-aware, into a standalone DB. Optional.
-- **General purchases** — parses Amazon (and eBay) order confirmations into a
-  general Purchases DB for everything that isn't a tracked book/game, and
-  captures unmatched non-book **shipment** mail there too (keyed by order #), so
-  those items aren't dropped. Optional.
+- **General purchases** — parses Amazon, eBay, and **Shopify-storefront** order
+  confirmations into a general Purchases DB for everything that isn't a tracked
+  book/game, and captures unmatched non-book **shipment** mail there too (keyed
+  by order #), so those items aren't dropped. Optional.
 - **Tech accessories** — routes tech-accessory purchases (chargers, cables,
   hubs, cases, audio, storage…) into a Tech Inventory Accessories DB instead —
   self-categorized, with a delivery ladder (Ordered → Shipped → Arriving →
@@ -138,6 +138,11 @@ A few things to know before you rely on it:
 - **Forwarder shipments can't be auto-marked Shipped.** ForwardMe's outbound
   emails carry no package code, so a consolidated shipment is logged only; set
   the package(s) to `Shipped` yourself.
+- **Shopify orders are confirmation-only.** A Shopify storefront order is
+  captured at purchase (seeded "from now", so old orders aren't backfilled), but
+  its later shipment/delivery mail isn't parsed — advance the status/ETA by hand.
+  Only `$`-denominated totals are read (an ISO suffix refines the currency, else
+  USD); a non-dollar store is skipped rather than mis-valued.
 
 ## License
 

@@ -71,6 +71,21 @@ test("techAccessoryCategory maps tech accessories to their bucket", () => {
   assert.equal(techAccessoryCategory(sig("Nintendo Switch 2 Pro Controller")), "Input");
 });
 
+test("techAccessoryCategory routes replacement shells/mod parts, not the device", () => {
+  // A replacement shell names the console ("… for Nintendo Switch 2"), but it's a
+  // Case/Carry accessory — the shell keyword must win over the device match.
+  assert.equal(
+    techAccessoryCategory(sig("eXtremeRate Full Set Shells for Nintendo Switch 2")),
+    "Case/Carry",
+  );
+  assert.equal(
+    techAccessoryCategory(sig("eXtremeRate Full Set Buttons for Nintendo Switch 2")),
+    "Input",
+  );
+  // classifyItem now recognizes a shell as an Accessory (not Electronics).
+  assert.equal(classifyItem(sig("Replacement faceplate housing")), "Accessory");
+});
+
 test("techAccessoryCategory excludes whole devices and non-tech items", () => {
   // A console/laptop is a device, not an accessory → not routed here.
   assert.equal(techAccessoryCategory(sig("Nintendo Switch 2")), null);

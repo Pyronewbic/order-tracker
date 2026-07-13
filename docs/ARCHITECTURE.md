@@ -187,7 +187,11 @@ priority order:
 
 The general-purchases and eBay passes key rows on the **order number** directly
 (Amazon `NNN-NNNNNNN-NNNNNNN`, eBay `NN-NNNNN-NNNNN`), so a confirmation and its
-later shipment/delivery/refund mail collapse onto one row. Games are keyed on
+later shipment/delivery/refund mail collapse onto one row. Shopify storefront
+confirmations (a fourth general pass, `runShopify`) are captured the same way but
+keyed by a **store-namespaced** order number (`<store> #<n>`) — Shopify numbers
+are only unique per store — and are confirmation-only (seeded "from now", no
+backfill). Games are keyed on
 `platform + title`; forwarder packages on ForwardMe's opaque package code.
 
 ## Status transitions
@@ -229,11 +233,13 @@ required). There are six write targets, each with its own client and schema:
   `Shipped`/`Received` are terminal and never reverted.
 - **Digital games DB** (`GAMES_DATABASE_ID`) — upsert by platform+title;
   `Purchased` never reverts to `Preordered`; stores a USD spend column.
-- **General purchases DB** (`GENERAL_DATABASE_ID`) — three independent passes over
+- **General purchases DB** (`GENERAL_DATABASE_ID`) — four independent passes over
   one shared order map loaded once per tick (in `runTick`): Amazon order
   confirmations (create `Ordered` rows; skip book/game orders, which the domain
-  DBs own), Amazon post-order lifecycle (advance status by order number), and
-  eBay confirmations + lifecycle (create `Collectibles` rows; refund → `Returned`).
+  DBs own), Amazon post-order lifecycle (advance status by order number), eBay
+  confirmations + lifecycle (create `Collectibles` rows; refund → `Returned`), and
+  Shopify storefront confirmations (create `Ordered` rows keyed by a store-
+  namespaced order number; confirmation-only, seeded from now).
   The **shipping** job also routes an unmatched non-book item into this DB (keyed
   by order #, category from the classifier, spend left blank until a confirmation
   supplies it) rather than dropping it — deduping against the same shared map, so

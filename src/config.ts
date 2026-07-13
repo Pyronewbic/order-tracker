@@ -95,6 +95,12 @@ const envSchema = z
       .default(
         "from:ebay.com subject:(confirmed OR carrier OR delivered OR delivery OR refund)",
       ),
+    // Gmail query for Shopify storefront order-confirmations ("Order #… confirmed"
+    // from *.shopifyemail.com), e.g. brands that sell direct off Shopify. Routes
+    // to the same accessories/general split as Amazon. Confirmation-only (Shopify
+    // shipment mail isn't parsed). Seeded "from now" on first run so enabling it
+    // never backfills old DTC orders. Only used when GENERAL_DATABASE_ID is set.
+    SHOPIFY_QUERY: z.string().default("from:shopifyemail.com subject:confirmed"),
     // Gmail query for digital game purchases: Amazon JP digital (order + code
     // delivery) and Nintendo eShop receipts/preorders. The eShop clause is
     // scoped to purchase/preorder subjects so sign-in/verification/NSO-renewal

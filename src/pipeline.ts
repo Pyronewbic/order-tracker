@@ -31,6 +31,7 @@ import {
   type GeneralStatus,
 } from "./general/lifecycle.js";
 import { parseEbayOrder, parseEbayLifecycle } from "./general/ebay.js";
+import { parseShopifyOrder } from "./general/shopify.js";
 import { classifyItem, techAccessoryCategory } from "./categorize.js";
 import {
   accessoryStatusFromGeneral,
@@ -796,6 +797,8 @@ async function upsertAccessory(
     amount?: number;
     currency?: string;
     etaMs?: number;
+    /** Storefront link (non-Amazon sources); Amazon derives its own from the id. */
+    orderUrl?: string;
   },
 ): Promise<boolean> {
   const { cfg, log, accessories } = deps;
@@ -837,7 +840,11 @@ async function upsertAccessory(
         amount: a.amount,
         currency: a.currency,
         etaMs: a.etaMs,
-        orderUrl: amazonOrderUrl(a.merchant, a.orderId),
+        orderUrl:
+          a.orderUrl ??
+          (a.merchant.startsWith("Amazon")
+            ? amazonOrderUrl(a.merchant, a.orderId)
+            : undefined),
         status: a.status,
         notes: `Auto-added from ${a.merchant} order ${a.orderId}.`,
       });
@@ -1056,6 +1063,138 @@ async function runGeneral(
   await runGeneralConfirmations(label, gmail, deps, ctx, existing, state);
   await runGeneralLifecycle(label, gmail, deps, ctx, existing, state);
   await runEbay(label, gmail, deps, ctx, existing, state);
+  await runShopify(label, gmail, deps, ctx, existing, state);
+}
+
+/**
+ * Shopify pass: capture "Order #… confirmed" mail from any Shopify storefront
+ * (`SHOPIFY_QUERY`) — brands that sell direct off Shopify rather than a
+ * marketplace. Tech accessories route to the Tech Inventory Accessories DB
+ * (self-categorized, priced); everything else to the general Purchases DB — both
+ * keyed by the store-namespaced order number, Status `Ordered`. Seeded "from now"
+ * on first run so enabling it never backfills years of unrelated DTC orders.
+ * Confirmation-only: Shopify shipment/delivery mail isn't parsed (advance those
+ * by hand). No-op unless the general DB is configured.
+ */
+async function runShopify(
+  label: string,
+  gmail: GmailClient,
+  deps: Deps,
+  ctx: TickContext,
+  existing: Map<string, { pageId: string; orderId: string; status: string }>,
+  state: State,
+): Promise<void> {
+  const { cfg, log, general } = deps;
+  if (!general) return;
+
+  const watermark = accountState(state, label);
+  // First run for this account: seed the watermark to now instead of fetching the
+  // whole Shopify history (which spans every store the user has ever bought from).
+  if (watermark.shopifyLastMs === 0) {
+    watermark.shopifyLastMs = Date.now();
+    await log.info(`[${label}] Shopify tracking seeded from now (no backfill).`);
+    return;
+  }
+
+  const messages = await fetchNewMessages(
+    gmail,
+    cfg.SHOPIFY_QUERY,
+    watermark.shopifyLastMs,
+    log,
+    label,
+  );
+  if (messages.length === 0) {
+    await log.info(`[${label}] No new Shopify messages.`);
+    return;
+  }
+  await log.info(`[${label}] Processing ${messages.length} Shopify message(s).`);
+
+  for (const msg of messages) {
+    watermark.shopifyLastMs = Math.max(watermark.shopifyLastMs, msg.internalDateMs);
+
+    const o = parseShopifyOrder(msg);
+    if (!o) continue;
+    if (existing.has(o.orderId)) continue; // already created (idempotent)
+
+    const cats = o.itemNames.map((n) =>
+      classifyItem({ itemName: n, from: msg.from, subject: msg.subject }),
+    );
+    if (cats.some((c) => c === "Book" || c === "Game")) continue; // domain-owned
+    if (o.itemNames.some((n) => matchRow(n, ctx.rows, cfg.MATCH_THRESHOLD))) {
+      await log.info(
+        `[${label}] Shopify order ${o.orderId} matches a tracked book; skipped.`,
+      );
+      continue;
+    }
+
+    // Tech accessories go to the Tech Inventory Accessories DB (priced), not the
+    // general Purchases DB.
+    if (deps.accessories) {
+      const techCat = techAccessoryCategory({
+        itemName: o.dominantItem,
+        from: msg.from,
+        subject: msg.subject,
+      });
+      if (
+        techCat &&
+        (await upsertAccessory(deps, ctx, {
+          label,
+          orderId: o.orderId,
+          name:
+            o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem,
+          category: techCat,
+          status: "Ordered",
+          merchant: o.merchant,
+          dateMs: o.dateMs,
+          amount: o.total,
+          currency: o.currency,
+          orderUrl: o.orderUrl,
+        }))
+      ) {
+        continue; // routed to Accessories — skip the general DB
+      }
+    }
+
+    if (cfg.DRY_RUN) {
+      await log.info(
+        `[${label}] [dry-run] would create Shopify order ${o.orderId} ` +
+          `(${o.currency} ${o.total}).`,
+      );
+      continue;
+    }
+
+    try {
+      const category = await categorizeOrder(
+        cats,
+        o.dominantItem,
+        o.merchant,
+        "Other",
+        deps,
+        ctx,
+      );
+      const usd = await toUSD(o.total, o.currency, o.dateMs);
+      const pageId = await general.createOrder(o.orderId, {
+        item:
+          o.itemCount > 1 ? `${o.dominantItem} (+${o.itemCount - 1})` : o.dominantItem,
+        merchant: o.merchant,
+        category,
+        amount: o.total,
+        currency: o.currency,
+        usd: usd ?? undefined,
+        dateMs: o.dateMs,
+        items: o.itemCount,
+        status: "Ordered",
+      });
+      existing.set(o.orderId, { pageId, orderId: o.orderId, status: "Ordered" });
+      await log.info(
+        `[${label}] New Shopify purchase ${o.orderId}: "${o.dominantItem.slice(0, 40)}" (${category}).`,
+      );
+    } catch (err) {
+      await log.error(
+        `[${label}] Failed upserting Shopify order ${o.orderId}: ${String(err)}`,
+      );
+    }
+  }
 }
 
 /**

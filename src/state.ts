@@ -28,6 +28,8 @@ const accountWatermarkSchema = z.object({
   generalLifecycleLastMs: z.number().int().nonnegative().default(0),
   /** Epoch ms of the newest eBay order email processed (confirmation + lifecycle). */
   ebayLastMs: z.number().int().nonnegative().default(0),
+  /** Epoch ms of the newest Shopify confirmation processed (0 = seed from now). */
+  shopifyLastMs: z.number().int().nonnegative().default(0),
 });
 
 // Every field defaults, and the legacy top-level timestamps are folded into the
@@ -63,6 +65,7 @@ const stateSchema = z
         generalLastMs: 0,
         generalLifecycleLastMs: 0,
         ebayLastMs: 0,
+        shopifyLastMs: 0,
       };
     }
     return {
@@ -97,6 +100,7 @@ export function accountState(state: State, label: string): AccountWatermark {
       generalLastMs: 0,
       generalLifecycleLastMs: 0,
       ebayLastMs: 0,
+      shopifyLastMs: 0,
     };
     state.accounts[label] = rec;
   }
