@@ -24,6 +24,9 @@ export interface GeneralRow {
   pageId: string;
   orderId: string;
   status: string;
+  /** True once the row carries a real charged amount. A `false` row is an E3
+   * shipping placeholder (spend blank) that a later confirmation may reclaim. */
+  priced: boolean;
 }
 
 const txtVal = z
@@ -38,6 +41,7 @@ const rowSchema = z
         .object({ select: z.object({ name: z.string() }).nullable() })
         .passthrough()
         .optional(),
+      Amount: z.object({ number: z.number().nullable() }).passthrough().optional(),
     }),
   })
   .passthrough();
@@ -99,6 +103,7 @@ export class GeneralNotionClient {
           pageId: parsed.data.id,
           orderId,
           status: parsed.data.properties.Status?.select?.name ?? "",
+          priced: (parsed.data.properties.Amount?.number ?? null) != null,
         });
       }
       cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
@@ -138,6 +143,15 @@ export class GeneralNotionClient {
         properties: properties as Parameters<Client["pages"]["update"]>[0]["properties"],
       }),
     );
+  }
+
+  /**
+   * Archive (move to trash) a general row. Used to reclaim an unpriced E3
+   * placeholder when a confirmation later reveals the order is a tech accessory
+   * that belongs in the Accessories DB — so it isn't tracked in both.
+   */
+  async archiveOrder(pageId: string): Promise<void> {
+    await withRetry(() => this.notion.pages.update({ page_id: pageId, archived: true }));
   }
 
   /** Update an existing order. Status is left untouched (it may be user-advanced). */

@@ -776,12 +776,32 @@ function amazonOrderUrl(merchant: string, orderId: string): string {
 }
 
 /**
+ * Given the general row (if any) for an order a confirmation has just identified
+ * as a tech accessory, decide how the accessory pass should treat it:
+ *  - "none": no general row — create/advance the accessory normally.
+ *  - "keep-general": a *priced* general row is a real general purchase — leave it
+ *    and don't also add an accessory (the caller returns false).
+ *  - "reclaim": an *unpriced* E3 placeholder (the shipping fallback filed it in
+ *    General before this confirmation revealed it was an accessory) — archive it
+ *    and take the order over, so it lives in one DB.
+ */
+export function planAccessoryReclaim(
+  generalRow: GeneralRow | undefined,
+): "none" | "keep-general" | "reclaim" {
+  if (!generalRow) return "none";
+  return generalRow.priced ? "keep-general" : "reclaim";
+}
+
+/**
  * Auto-add or advance a tech accessory in the Tech Inventory Accessories DB.
- * Spend-only (amount comes from an order confirmation; a shipment carries none),
- * deduped on the shared per-tick accessory map, and it never steals an order the
- * general DB already owns (avoids a duplicate during the changeover). "From now"
- * is inherent: the calling pass only sees mail newer than its watermark. Returns
- * true when it handled the order (created / advanced / enriched, or dry-run).
+ * Spend-only (amount comes from an order confirmation; a shipment carries none)
+ * and deduped on the shared per-tick accessory map. A *priced* general row for
+ * the same order is a real general purchase and is left alone (no duplicate); an
+ * *unpriced* E3 placeholder — the shipping fallback filed it in General before a
+ * confirmation revealed it was an accessory — is reclaimed (archived) so the
+ * order lives in one DB. "From now" is inherent: the calling pass only sees mail
+ * newer than its watermark. Returns true when it handled the order (created /
+ * advanced / enriched / reclaimed, or dry-run).
  */
 async function upsertAccessory(
   deps: Deps,
@@ -801,17 +821,46 @@ async function upsertAccessory(
     orderUrl?: string;
   },
 ): Promise<boolean> {
-  const { cfg, log, accessories } = deps;
+  const { cfg, log, accessories, general } = deps;
   if (!accessories) return false;
-  if (ctx.generalOrders.has(a.orderId)) return false; // already owned by general DB
+
+  // A general row for this order means the shipping fallback (E3) got here first.
+  // A priced row is a real general purchase — leave it, don't duplicate. An
+  // unpriced placeholder means this confirmation has revealed the order is a tech
+  // accessory: reclaim it (archived below) so it isn't tracked in both DBs.
+  const generalRow = ctx.generalOrders.get(a.orderId);
+  if (planAccessoryReclaim(generalRow) === "keep-general") return false;
 
   const existing = ctx.accessoryOrders.get(a.orderId);
 
   if (cfg.DRY_RUN) {
+    if (generalRow) {
+      await log.info(
+        `[${a.label}] [dry-run] would reclaim order ${a.orderId} from General → Accessories.`,
+      );
+    }
     await log.info(
       `[${a.label}] [dry-run] would ${existing ? "advance" : "add"} accessory ${a.orderId} → ${a.status} (${a.category}).`,
     );
     return true;
+  }
+
+  // Reclaim an unpriced placeholder before creating/advancing the accessory; if it
+  // can't be removed, bail rather than track the order in both DBs.
+  if (generalRow && general) {
+    try {
+      await general.archiveOrder(generalRow.pageId);
+      ctx.generalOrders.delete(a.orderId);
+      ctx.updates++;
+      await log.info(
+        `[${a.label}] Reclaimed order ${a.orderId} from General → Accessories.`,
+      );
+    } catch (err) {
+      await log.error(
+        `[${a.label}] Failed to archive General placeholder ${a.orderId}: ${String(err)}`,
+      );
+      return false;
+    }
   }
 
   try {
@@ -969,7 +1018,9 @@ async function routeToGeneral(
         etaMs: update.etaMs, // puts the routed item on the General delivery calendar
         status: gStatus,
       });
-      ctx.generalOrders.set(orderId, { pageId, orderId, status: gStatus });
+      // Unpriced placeholder (spend blank): a later confirmation supplies the
+      // amount, or — if it turns out to be a tech accessory — reclaims it.
+      ctx.generalOrders.set(orderId, { pageId, orderId, status: gStatus, priced: false });
       ctx.updates++;
       await log.info(
         `[${label}] Routed order ${orderId} to General: "${item.slice(0, 40)}" (${category}, ${gStatus}).`,
@@ -1081,7 +1132,7 @@ async function runShopify(
   gmail: GmailClient,
   deps: Deps,
   ctx: TickContext,
-  existing: Map<string, { pageId: string; orderId: string; status: string }>,
+  existing: Map<string, GeneralRow>,
   state: State,
 ): Promise<void> {
   const { cfg, log, general } = deps;
@@ -1185,7 +1236,12 @@ async function runShopify(
         items: o.itemCount,
         status: "Ordered",
       });
-      existing.set(o.orderId, { pageId, orderId: o.orderId, status: "Ordered" });
+      existing.set(o.orderId, {
+        pageId,
+        orderId: o.orderId,
+        status: "Ordered",
+        priced: true,
+      });
       await log.info(
         `[${label}] New Shopify purchase ${o.orderId}: "${o.dominantItem.slice(0, 40)}" (${category}).`,
       );
@@ -1208,7 +1264,7 @@ async function runGeneralConfirmations(
   gmail: GmailClient,
   deps: Deps,
   ctx: TickContext,
-  existing: Map<string, { pageId: string; orderId: string; status: string }>,
+  existing: Map<string, GeneralRow>,
   state: State,
 ): Promise<void> {
   const { cfg, log, general } = deps;
@@ -1310,7 +1366,12 @@ async function runGeneralConfirmations(
             ...update,
             status: "Ordered",
           });
-          existing.set(o.orderId, { pageId, orderId: o.orderId, status: "Ordered" });
+          existing.set(o.orderId, {
+            pageId,
+            orderId: o.orderId,
+            status: "Ordered",
+            priced: true,
+          });
           await log.info(
             `[${label}] New purchase ${o.orderId}: "${o.dominantItem.slice(0, 40)}" (${category}).`,
           );
@@ -1336,7 +1397,7 @@ async function runEbay(
   gmail: GmailClient,
   deps: Deps,
   ctx: TickContext,
-  existing: Map<string, { pageId: string; orderId: string; status: string }>,
+  existing: Map<string, GeneralRow>,
   state: State,
 ): Promise<void> {
   const { cfg, log, general } = deps;
@@ -1396,6 +1457,7 @@ async function runEbay(
           pageId,
           orderId: order.orderId,
           status: "Ordered",
+          priced: true,
         });
         await log.info(
           `[${label}] New eBay order ${order.orderId}: "${order.dominantItem.slice(0, 40)}".`,
@@ -1457,7 +1519,7 @@ async function runGeneralLifecycle(
   gmail: GmailClient,
   deps: Deps,
   ctx: TickContext,
-  existing: Map<string, { pageId: string; orderId: string; status: string }>,
+  existing: Map<string, GeneralRow>,
   state: State,
 ): Promise<void> {
   const { cfg, log, general } = deps;
