@@ -212,6 +212,18 @@ This keeps a late, out-of-order email from un-delivering a package. The general
 DB uses a parallel, simpler ladder (`Ordered → Shipped → Delivered`, terminal
 `Cancelled`/`Returned`) in `general/lifecycle.ts`.
 
+**Amazon India final-mile.** Amazon India rarely sends a machine-readable
+"Delivered" email; its last signal is an "Out for delivery" / "Arriving Today"
+notice (often the OTP-required variant, whose body carries only the order #).
+`parseMessage` promotes that IN notice to `Delivered` (stamping the email's date
+as delivered-on) so IN orders don't stall at `Arriving Soon`. Scoped to an
+`@amazon.in` sender and a same-day **subject** (`out for delivery` /
+`arriving today`) — a future-dated "Arriving Wednesday" stays `Arriving Soon`,
+`.com`/`.jp` keep waiting for their real Delivered email, and matching on the
+subject avoids the static "Out for delivery" progress-bar label in every body.
+Trade-off: an IN package is marked delivered when it goes out for delivery, so a
+same-day failed delivery would need a manual fix (`Delayed` can't regress it).
+
 ## The Notion write path
 
 Every DB is **opt-in** via its own env var; if the var is unset, that feature is
