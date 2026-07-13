@@ -1,7 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { planUpdate } from "../src/pipeline.js";
+import { planUpdate, planAccessoryReclaim } from "../src/pipeline.js";
+import type { GeneralRow } from "../src/general/notion.js";
 import { row, update } from "./helpers.js";
+
+const gRow = (priced: boolean): GeneralRow => ({
+  pageId: "g1",
+  orderId: "111-1",
+  status: "Shipped",
+  priced,
+});
 
 test("advances only along the monotonic progress ladder", () => {
   assert.equal(
@@ -46,4 +54,14 @@ test("terminal, protected, and delayed transitions", () => {
     planUpdate(row("X", { status: "Delayed" }), update("Arriving Soon")),
     "apply",
   );
+});
+
+test("planAccessoryReclaim: reclaim unpriced placeholders, keep priced purchases", () => {
+  // No general row for this order → the accessory pass just creates/advances.
+  assert.equal(planAccessoryReclaim(undefined), "none");
+  // A priced general row is a real purchase → leave it in General, don't duplicate.
+  assert.equal(planAccessoryReclaim(gRow(true)), "keep-general");
+  // An unpriced E3 placeholder (truncated shipping subject filed it in General
+  // before the confirmation revealed it was an accessory) → reclaim it.
+  assert.equal(planAccessoryReclaim(gRow(false)), "reclaim");
 });

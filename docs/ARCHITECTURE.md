@@ -253,7 +253,11 @@ required). There are six write targets, each with its own client and schema:
   Owned`, plus `Cancelled`) by the confirmation / shipping / lifecycle passes.
   Manual rows (no order #) and a manual `Wishlist` are never touched; spend is
   left blank until a confirmation supplies it (spend-only). "From now" is
-  inherent — the passes only see mail past their watermarks.
+  inherent — the passes only see mail past their watermarks. If the shipping
+  fallback filed an accessory in General first (its truncated subject hid that it
+  was an accessory), a later confirmation that recognizes it **reclaims** the
+  order — archiving the unpriced General placeholder — so it lives in one DB; a
+  *priced* General row is a real purchase and is left alone.
 - **Spend summary DB** (`SPEND_SUMMARY_DATABASE_ID`) — see below.
 
 All Notion reads/writes go through `withRetry` (see below). Notion responses are
