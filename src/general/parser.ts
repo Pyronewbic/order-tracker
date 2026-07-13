@@ -35,6 +35,8 @@ export interface GeneralOrder {
   currency: string;
   /** Epoch ms the order was placed (the email date). */
   dateMs: number;
+  /** Storefront order/details URL, when the source carries one (Shopify). */
+  orderUrl?: string;
 }
 
 function merchantFor(from: string): string {

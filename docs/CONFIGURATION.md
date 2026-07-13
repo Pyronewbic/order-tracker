@@ -90,6 +90,7 @@ Each query is only consulted when its feature is enabled. Parenthesize
 | `GENERAL_QUERY` | Optional | `auto-confirm@amazon.{com,in,co.jp}` | Amazon order-confirmation mail → general Purchases DB. Only used when `GENERAL_DATABASE_ID` is set. |
 | `GENERAL_LIFECYCLE_QUERY` | Optional | Amazon `shipment-tracking@`/`order-update@`/`return@` across `.com`/`.in`/`.co.jp` | Post-order mail (ship/deliver/cancel/refund) that advances a general order's Status by its order number. Excludes `auto-confirm@` (handled by `GENERAL_QUERY`). Only used when `GENERAL_DATABASE_ID` is set. |
 | `EBAY_QUERY` | Optional | `from:ebay.com subject:(confirmed OR carrier OR delivered OR delivery OR refund)` | eBay order events into the same general DB (as Collectibles). Subject-scoped so bids/offers/feedback/marketing are skipped. Only used when `GENERAL_DATABASE_ID` is set. |
+| `SHOPIFY_QUERY` | Optional | `from:shopifyemail.com subject:confirmed` | Shopify storefront order-confirmations (brands that sell direct off Shopify) → the same accessories/general split as Amazon, keyed by a store-namespaced order number. Confirmation-only; seeded "from now" on first run so it never backfills old orders. Only used when `GENERAL_DATABASE_ID` is set. |
 
 ---
 
@@ -109,7 +110,7 @@ connected to **each** DB you use individually (••• → Connections).
 | `NOTION_DATABASE_ID` | **Required** | — | Main book/shipment tracker DB. 32-char ID from the DB URL. Startup verifies read access and exits if it can't read the DB. | `your-notion-database-id` |
 | `FORWARDER_DATABASE_ID` | Opt-in | off | Standalone "Forwarder Packages" DB (packages held at ForwardMe, keyed by package code). Needs Insert content. | `your-forwarder-db-id` |
 | `GAMES_DATABASE_ID` | Opt-in | off | Standalone "Digital Games" DB (Nintendo eShop US/JP, Amazon JP game codes). Wallet top-ups and NSO subscriptions excluded. Needs Insert content. | `your-games-db-id` |
-| `GENERAL_DATABASE_ID` | Opt-in | off | General "Purchases" DB (non-book/game Amazon orders + eBay). One row per order; book/game orders are dropped so the summary never double-counts. Needs Insert content. Gates `GENERAL_LIFECYCLE_QUERY` and `EBAY_QUERY`. | `your-general-db-id` |
+| `GENERAL_DATABASE_ID` | Opt-in | off | General "Purchases" DB (non-book/game Amazon orders + eBay). One row per order; book/game orders are dropped so the summary never double-counts. Needs Insert content. Gates `GENERAL_LIFECYCLE_QUERY`, `EBAY_QUERY`, and `SHOPIFY_QUERY`. | `your-general-db-id` |
 | `SPEND_SUMMARY_DATABASE_ID` | Opt-in | off | Cross-DB "Spend Summary" DB rolling per-month USD spend (books + games + general) into a Source × Month view. Needs Insert content. | `your-summary-db-id` |
 | `TECH_ACCESSORIES_DATABASE_ID` | Opt-in | off | Tech Inventory "Accessories" DB. A tech-accessory purchase (charger/cable/hub/case/audio/storage/input… — **not** a whole device) is auto-added here, self-categorized, with a delivery ladder (`Ordered → Shipped → Arriving → Owned`), **instead of** the general Purchases DB. Keyed by a hidden `Order #`; manual rows are never touched. Needs Insert content. Priced creation uses the order-confirmation pass, so enable `GENERAL_DATABASE_ID` too. | `your-accessories-db-id` |
 

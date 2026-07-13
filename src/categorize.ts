@@ -20,7 +20,7 @@ const DIGITAL_TEXT =
   /\b(online code|download code|digital code|redemption code|redeem code|digital download|prepaid|gift ?card|e-?gift)\b|オンラインコード|ダウンロード版|引き換えコード|プリペイド|ギフト券/i;
 
 const ACCESSORY =
-  /\b(?:controllers?|joy-?cons?|joysticks?|gamepads?|grips?|cases?|covers?|pouches?|sleeves?|cables?|chargers?|charging|docks?|stands?|mounts?|screen protectors?|tempered glass|head ?sets?|earbuds?|skins?|straps?|adapters?|thumb ?grips?)\b/i;
+  /\b(?:controllers?|joy-?cons?|joysticks?|gamepads?|grips?|cases?|covers?|shells?|faceplates?|back ?plates?|housings?|pouches?|sleeves?|cables?|chargers?|charging|docks?|stands?|mounts?|screen protectors?|tempered glass|head ?sets?|earbuds?|skins?|straps?|adapters?|thumb ?grips?)\b/i;
 
 const BOOK =
   /\b(?:books?|encyclopedias?|guides?|art ?books?|mangas?|novels?|hardcovers?|paperbacks?|strategy guides?|official guides?|chronicles?|compendiums?|companions?|lore)\b/i;
@@ -71,11 +71,14 @@ const TECH_BUCKETS: [RegExp, string][] = [
   ],
   [/\b(monitors?|displays?|external screens?)\b/i, "Display"],
   [
-    /\b(controllers?|gamepads?|joy-?cons?|keyboards?|mouse|mice|trackpads?|stylus(?:es)?)\b/i,
+    /\b(controllers?|gamepads?|joy-?cons?|keyboards?|mouse|mice|trackpads?|stylus(?:es)?|thumb ?sticks?|d-?pads?|full set buttons?|button (?:set|kit)s?|replacement buttons?)\b/i,
     "Input",
   ],
   [/\b(cables?|cords?|hdmi lead|usb-?c cable)\b/i, "Cable"],
-  [/\b(cases?|sleeves?|pouch(?:es)?|bags?|covers?|skins?|folios?)\b/i, "Case/Carry"],
+  [
+    /\b(cases?|sleeves?|pouch(?:es)?|bags?|covers?|skins?|folios?|shells?|faceplates?|back ?plates?|housings?)\b/i,
+    "Case/Carry",
+  ],
 ];
 
 /**
