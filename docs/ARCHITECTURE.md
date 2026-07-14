@@ -269,7 +269,11 @@ required). There are six write targets, each with its own client and schema:
   fallback filed an accessory in General first (its truncated subject hid that it
   was an accessory), a later confirmation that recognizes it **reclaims** the
   order — archiving the unpriced General placeholder — so it lives in one DB; a
-  *priced* General row is a real purchase and is left alone.
+  *priced* General row is a real purchase and is left alone. Dedup matches on a
+  **normalized order number** (`orderNumberKey`: the token after a `#`, else the
+  whole id), so a store-namespaced Shopify id (`eXtremeRate #95413`) reconciles
+  with a manually-entered bare number (`95413`) and the daemon advances that row
+  in place instead of auto-adding a duplicate.
 - **Spend summary DB** (`SPEND_SUMMARY_DATABASE_ID`) — see below.
 
 All Notion reads/writes go through `withRetry` (see below). Notion responses are

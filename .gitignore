@@ -11,3 +11,8 @@ tracker.log
 *.tmp
 .DS_Store
 fx-cache.json
+
+# Local scratch + personal receipt/warranty PDFs (never commit — public repo)
+_scratch_*
+invoice/
+warranty/

@@ -793,6 +793,41 @@ export function planAccessoryReclaim(
 }
 
 /**
+ * Canonical order-number key for accessory dedup. Shopify ids are store-
+ * namespaced (`eXtremeRate #95413`); Amazon ids are bare (`171-…-…`); a manual
+ * row may carry just the number (`95413`). Reducing to the token after a `#`
+ * (or the whole id when there's none), lowercased, lets those formats reconcile
+ * so the same order resolves to one row. (Distinct Shopify stores sharing a
+ * numeric order # would collide, but that's vanishingly rare for one buyer.)
+ */
+export function orderNumberKey(orderId: string): string {
+  const s = orderId.trim();
+  const hash = s.lastIndexOf("#");
+  return (hash >= 0 ? s.slice(hash + 1) : s).trim().toLowerCase();
+}
+
+/**
+ * Find an existing accessory row for this order: exact `Order #` match first,
+ * then by {@link orderNumberKey} so the daemon recognizes a manually-added or
+ * differently-formatted row (e.g. `95413` vs `eXtremeRate #95413`) and advances
+ * it in place instead of auto-adding a duplicate. A row must carry an order #
+ * to be matched (order-less manual rows aren't in the map).
+ */
+export function findAccessoryByOrder(
+  orders: Map<string, AccessoryRow>,
+  orderId: string,
+): AccessoryRow | undefined {
+  const exact = orders.get(orderId);
+  if (exact) return exact;
+  const key = orderNumberKey(orderId);
+  if (!key) return undefined;
+  for (const row of orders.values()) {
+    if (orderNumberKey(row.orderId) === key) return row;
+  }
+  return undefined;
+}
+
+/**
  * Auto-add or advance a tech accessory in the Tech Inventory Accessories DB.
  * Spend-only (amount comes from an order confirmation; a shipment carries none)
  * and deduped on the shared per-tick accessory map. A *priced* general row for
@@ -831,7 +866,7 @@ async function upsertAccessory(
   const generalRow = ctx.generalOrders.get(a.orderId);
   if (planAccessoryReclaim(generalRow) === "keep-general") return false;
 
-  const existing = ctx.accessoryOrders.get(a.orderId);
+  const existing = findAccessoryByOrder(ctx.accessoryOrders, a.orderId);
 
   if (cfg.DRY_RUN) {
     if (generalRow) {
