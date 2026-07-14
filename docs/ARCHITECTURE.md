@@ -273,7 +273,9 @@ required). There are six write targets, each with its own client and schema:
   **normalized order number** (`orderNumberKey`: the token after a `#`, else the
   whole id), so a store-namespaced Shopify id (`eXtremeRate #95413`) reconciles
   with a manually-entered bare number (`95413`) and the daemon advances that row
-  in place instead of auto-adding a duplicate.
+  in place instead of auto-adding a duplicate. On an →`Owned` transition the
+  delivering email's date is stamped on `Delivered date` (mirrors the general
+  DB's `Delivered on`), giving the Notion-side warranty formulas an arrival date.
 - **Spend summary DB** (`SPEND_SUMMARY_DATABASE_ID`) — see below.
 
 All Notion reads/writes go through `withRetry` (see below). Notion responses are

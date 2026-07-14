@@ -852,6 +852,9 @@ async function upsertAccessory(
     amount?: number;
     currency?: string;
     etaMs?: number;
+    /** Delivering email's date (epoch ms); stamped as the Delivered date on
+     * an →Owned transition so the warranty formulas have an arrival date. */
+    deliveredMs?: number;
     /** Storefront link (non-Amazon sources); Amazon derives its own from the id. */
     orderUrl?: string;
   },
@@ -901,7 +904,7 @@ async function upsertAccessory(
   try {
     if (existing) {
       if (planAccessoryUpdate(existing.status, a.status) === "apply") {
-        await accessories.setStatus(existing.pageId, a.status);
+        await accessories.setStatus(existing.pageId, a.status, a.deliveredMs);
         existing.status = a.status;
         ctx.updates++;
         await log.info(`[${a.label}] Accessory ${a.orderId} → ${a.status}.`);
@@ -924,6 +927,9 @@ async function upsertAccessory(
         amount: a.amount,
         currency: a.currency,
         etaMs: a.etaMs,
+        // Stamp Delivered date only when the row is born already Owned (a
+        // delivered email seen before any earlier-stage mail).
+        deliveredMs: a.status === "Owned" ? a.deliveredMs : undefined,
         orderUrl:
           a.orderUrl ??
           (a.merchant.startsWith("Amazon")
@@ -993,6 +999,7 @@ async function routeToGeneral(
         merchant: amazonMerchant(msg.from),
         dateMs: msg.internalDateMs,
         etaMs: update.etaMs,
+        deliveredMs: update.deliveredMs,
       });
       if (handled) return true;
     }
@@ -1594,6 +1601,7 @@ async function runGeneralLifecycle(
         status: accessoryStatusFromGeneral(ev.status),
         merchant: amazonMerchant(msg.from),
         dateMs: msg.internalDateMs,
+        deliveredMs: ev.status === "Delivered" ? msg.internalDateMs : undefined,
       }))
     ) {
       continue;
