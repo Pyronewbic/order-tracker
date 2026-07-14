@@ -75,6 +75,9 @@ export interface AccessoryUpdate {
   status?: AccessoryStatus;
   /** Delivery ETA (epoch ms → date-only) for the accessory Arrivals calendar. */
   etaMs?: number;
+  /** Actual delivered-on date (epoch ms → date-only), set on →Owned. Feeds the
+   * warranty-period formulas (Warranty ends / days left). */
+  deliveredMs?: number;
 }
 
 /** An accessory row reduced to what we read (only the auto-tracked ones). */
@@ -179,14 +182,24 @@ export class AccessoriesNotionClient {
     return res.id;
   }
 
-  /** Advance an accessory's delivery Status. */
-  async setStatus(pageId: string, status: AccessoryStatus): Promise<void> {
+  /**
+   * Advance an accessory's delivery Status. On an →`Owned` transition,
+   * `deliveredMs` (the delivering email's date) is stamped on the "Delivered
+   * date" column so the warranty-period formulas have an actual arrival date.
+   */
+  async setStatus(
+    pageId: string,
+    status: AccessoryStatus,
+    deliveredMs?: number,
+  ): Promise<void> {
+    const properties: Record<string, unknown> = { Status: { select: { name: status } } };
+    if (deliveredMs && status === "Owned") {
+      properties["Delivered date"] = { date: { start: isoDate(deliveredMs) } };
+    }
     await withRetry(() =>
       this.notion.pages.update({
         page_id: pageId,
-        properties: { Status: { select: { name: status } } } as Parameters<
-          Client["pages"]["update"]
-        >[0]["properties"],
+        properties: properties as Parameters<Client["pages"]["update"]>[0]["properties"],
       }),
     );
   }
@@ -214,6 +227,7 @@ export class AccessoriesNotionClient {
     if (u.category) p.Category = { select: { name: u.category } };
     if (u.orderUrl) p["Order link"] = { url: u.orderUrl };
     if (u.etaMs) p.ETA = { date: { start: isoDate(u.etaMs) } };
+    if (u.deliveredMs) p["Delivered date"] = { date: { start: isoDate(u.deliveredMs) } };
     if (u.notes) p.Notes = rt(u.notes);
     if (includeStatus && u.status) p.Status = { select: { name: u.status } };
     return p;
