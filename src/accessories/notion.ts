@@ -85,6 +85,12 @@ export interface AccessoryRow {
   pageId: string;
   orderId: string;
   status: string;
+  /** Charged amount, or null when the row is still unpriced — a shipment-created
+   * row whose confirmation never supplied a price. Drives the price recovery. */
+  amount: number | null;
+  /** Currency of {@link amount}; needed to compare a row against a recovered
+   * price like-for-like (a USD row must never be diffed against an INR total). */
+  currency: string | null;
 }
 
 const rt = (s: string): { rich_text: { text: { content: string } }[] } => ({
@@ -103,6 +109,11 @@ const rowSchema = z
         .passthrough()
         .optional(),
       Status: z
+        .object({ select: z.object({ name: z.string() }).nullable() })
+        .passthrough()
+        .optional(),
+      Amount: z.object({ number: z.number().nullable() }).passthrough().optional(),
+      Currency: z
         .object({ select: z.object({ name: z.string() }).nullable() })
         .passthrough()
         .optional(),
@@ -162,6 +173,8 @@ export class AccessoriesNotionClient {
           pageId: parsed.data.id,
           orderId,
           status: parsed.data.properties.Status?.select?.name ?? "",
+          amount: parsed.data.properties.Amount?.number ?? null,
+          currency: parsed.data.properties.Currency?.select?.name ?? null,
         });
       }
       cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;

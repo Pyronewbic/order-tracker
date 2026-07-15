@@ -32,6 +32,7 @@ import {
 } from "./general/lifecycle.js";
 import { parseEbayOrder, parseEbayLifecycle } from "./general/ebay.js";
 import { parseShopifyOrder } from "./general/shopify.js";
+import { recoverOrderPrice, type PriceCache } from "./general/price-lookup.js";
 import { classifyItem, techAccessoryCategory } from "./categorize.js";
 import {
   accessoryStatusFromGeneral,
@@ -78,6 +79,9 @@ interface TickContext {
   /** Tech-accessory order map (order # → row), loaded once per tick; shared so
    * the shipping/confirmation/lifecycle passes dedup (empty when off). */
   accessoryOrders: Map<string, AccessoryRow>;
+  /** Order # → price recovered from mail (or null when the search came up
+   * empty), so one tick never searches the same order twice. */
+  priceLookups: PriceCache;
   /** Notion updates applied this tick (for the update-cap alarm). */
   updates: number;
   /** LLM calls made this tick across ALL accounts (for the per-tick cap). */
@@ -203,6 +207,7 @@ export async function runTick(
     rowsById: new Map(rows.map((r) => [r.pageId, r])),
     generalOrders: new Map(),
     accessoryOrders: new Map(),
+    priceLookups: new Map(),
     updates: 0,
     llmCalls: 0,
     llmCapAlerted: false,
@@ -364,7 +369,7 @@ async function runShipping(
     const row = resolveRow(label, update, ctx, state, cfg.MATCH_THRESHOLD);
     if (!row) {
       // E3: capture an unmatched non-book item in the General DB before dropping.
-      if (await routeToGeneral(label, msg, update, deps, ctx)) continue;
+      if (await routeToGeneral(label, msg, update, deps, ctx, gmail)) continue;
       const ident =
         update.itemName ||
         `${update.carrier} ${update.trackingNumbers.join(", ") || "(no tracking #)"}`;
@@ -857,6 +862,9 @@ async function upsertAccessory(
     deliveredMs?: number;
     /** Storefront link (non-Amazon sources); Amazon derives its own from the id. */
     orderUrl?: string;
+    /** Inbox to fall back to when this call carries no price (the shipping and
+     * lifecycle passes don't). Enables {@link recoverOrderPrice}. */
+    gmail?: GmailClient;
   },
 ): Promise<boolean> {
   const { cfg, log, accessories, general } = deps;
@@ -870,6 +878,23 @@ async function upsertAccessory(
   if (planAccessoryReclaim(generalRow) === "keep-general") return false;
 
   const existing = findAccessoryByOrder(ctx.accessoryOrders, a.orderId);
+
+  // Price recovery: the shipping/lifecycle passes carry no amount, so a row they
+  // create (or reclaim) would stay unpriced once its confirmation is past the
+  // general watermark. Only look up when the row would actually end up without a
+  // price — never for an already-priced row, and never when this call has one.
+  let amount = a.amount;
+  let currency = a.currency;
+  if (amount === undefined && a.gmail && (!existing || existing.amount === null)) {
+    const recovered = await recoverOrderPrice(a.gmail, a.orderId, ctx.priceLookups);
+    if (recovered) {
+      amount = recovered.total;
+      currency = recovered.currency;
+      await log.info(
+        `[${a.label}] Recovered price for ${a.orderId}: ${recovered.currency} ${recovered.total}.`,
+      );
+    }
+  }
 
   if (cfg.DRY_RUN) {
     if (generalRow) {
@@ -912,20 +937,23 @@ async function upsertAccessory(
       // Enrich the price (a confirmation arriving after the shipment that first
       // created the row) and/or the ETA (from a shipment) if this call has them.
       const enrich: AccessoryUpdate = {};
-      if (typeof a.amount === "number") {
-        enrich.amount = a.amount;
-        enrich.currency = a.currency;
+      if (typeof amount === "number") {
+        enrich.amount = amount;
+        enrich.currency = currency;
       }
       if (a.etaMs) enrich.etaMs = a.etaMs;
       if (Object.keys(enrich).length > 0) {
         await accessories.updateAccessory(existing.pageId, enrich);
+        // Keep the per-tick map honest so a later pass sees the row as priced
+        // and doesn't repeat the lookup.
+        if (typeof amount === "number") existing.amount = amount;
       }
     } else {
       const pageId = await accessories.createAccessory(a.orderId, {
         name: a.name,
         category: a.category,
-        amount: a.amount,
-        currency: a.currency,
+        amount,
+        currency,
         etaMs: a.etaMs,
         // Stamp Delivered date only when the row is born already Owned (a
         // delivered email seen before any earlier-stage mail).
@@ -942,6 +970,8 @@ async function upsertAccessory(
         pageId,
         orderId: a.orderId,
         status: a.status,
+        amount: amount ?? null,
+        currency: currency ?? null,
       });
       ctx.updates++;
       await log.info(
@@ -974,6 +1004,7 @@ async function routeToGeneral(
   update: ShipmentUpdate,
   deps: Deps,
   ctx: TickContext,
+  gmail: GmailClient,
 ): Promise<boolean> {
   const { cfg, log, general } = deps;
   if (!update.orderId) return false;
@@ -1000,6 +1031,7 @@ async function routeToGeneral(
         dateMs: msg.internalDateMs,
         etaMs: update.etaMs,
         deliveredMs: update.deliveredMs,
+        gmail, // a shipment carries no price — recover it from the order's mail
       });
       if (handled) return true;
     }
@@ -1602,6 +1634,7 @@ async function runGeneralLifecycle(
         merchant: amazonMerchant(msg.from),
         dateMs: msg.internalDateMs,
         deliveredMs: ev.status === "Delivered" ? msg.internalDateMs : undefined,
+        gmail, // a lifecycle event carries no price — recover it from the order's mail
       }))
     ) {
       continue;

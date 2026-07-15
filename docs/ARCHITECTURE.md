@@ -276,6 +276,14 @@ required). There are six write targets, each with its own client and schema:
   in place instead of auto-adding a duplicate. On an →`Owned` transition the
   delivering email's date is stamped on `Delivered date` (mirrors the general
   DB's `Delivered on`), giving the Notion-side warranty formulas an arrival date.
+  **Price recovery:** the shipping/lifecycle passes carry no amount, so a row
+  they create or reclaim would stay unpriced once its confirmation is older than
+  the general watermark. When — and only when — a row would end up without a
+  price, `recoverOrderPrice` (`general/price-lookup.ts`) searches mail **by order
+  #** (watermark-independent, cached per tick) and fills the charged total.
+  Best-effort: no mail, no price — an amount is never invented. `npm run
+  backfill:prices` applies the same recovery to existing rows (fills blanks;
+  same-currency disagreements are reported, never overwritten).
 - **Spend summary DB** (`SPEND_SUMMARY_DATABASE_ID`) — see below.
 
 All Notion reads/writes go through `withRetry` (see below). Notion responses are
