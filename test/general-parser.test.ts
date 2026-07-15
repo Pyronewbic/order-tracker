@@ -20,6 +20,21 @@ test("parseOrderEmail reads a single Amazon order (merchant, item, total, curren
   assert.equal(o.currency, "INR");
 });
 
+test("parseOrderEmail survives Amazon's float-artifact totals", () => {
+  // Real mail: the Ordered email says "Total 4508.61 INR" but the Shipped one
+  // says "Total 4508.610000000001 INR". A >3-digit tail is a decimal, not a
+  // thousands group — reading it as thousands yielded 4508610000000001.
+  const orders = parseOrderEmail(
+    msg({
+      from: "shipment-tracking@amazon.in",
+      body:
+        "Order # 404-1112511-7457135 * Spigen Hard Shell Case Quantity: 1 2849.05 INR " +
+        "Total 4508.610000000001 INR",
+    }),
+  );
+  assert.equal(orders[0]!.total, 4508.61);
+});
+
 test("parseOrderEmail splits multiple orders and picks the dominant item", () => {
   const orders = parseOrderEmail(
     msg({

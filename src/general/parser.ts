@@ -46,8 +46,11 @@ function merchantFor(from: string): string {
   return "Amazon US";
 }
 
-// "1.234,56" / "1,234.56" / "5896" → number. Last separator with 1–2 trailing
-// digits is the decimal; otherwise separators are thousands.
+// "1.234,56" / "1,234.56" / "5896" → number. A thousands group is always exactly
+// three digits, so a last separator trailed by 1–2 digits — or by MORE than 3,
+// which Amazon emits as a float artifact ("Total 4508.610000000001 INR") — is the
+// decimal point; exactly 3 trailing digits reads as thousands. Money only, so the
+// result is rounded to 2dp: that keeps a float artifact from reaching Notion.
 function num(s: string): number | null {
   const m = s.match(/[\d.,]+/);
   if (!m) return null;
@@ -55,7 +58,7 @@ function num(s: string): number | null {
   const li = Math.max(t.lastIndexOf(","), t.lastIndexOf("."));
   if (li >= 0) {
     const after = t.length - li - 1;
-    if (after === 1 || after === 2) {
+    if (after === 1 || after === 2 || after > 3) {
       const dec = t[li]!;
       t = t
         .split(dec === "," ? "." : ",")
@@ -64,7 +67,7 @@ function num(s: string): number | null {
     } else t = t.replace(/[.,]/g, "");
   }
   const v = parseFloat(t);
-  return Number.isNaN(v) ? null : v;
+  return Number.isNaN(v) ? null : Math.round(v * 100) / 100;
 }
 
 const ITEM_RE = /\*\s*(.+?)\s+Quantity:\s*\d+\s+([\d.,]+)\s+([A-Z]{3})/g;

@@ -34,6 +34,7 @@
     "auth": "tsx src/auth.ts",
     "accounts": "tsx src/auth.ts -- --list",
     "telegram:chat-id": "tsx src/telegram/chat-id.ts",
+    "backfill:prices": "tsx src/backfill-prices.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
